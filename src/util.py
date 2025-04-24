@@ -2,13 +2,11 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Type
+from typing import Any, Iterable
 
 import geopandas as gpd
 from omegaconf import OmegaConf
 from shapely.geometry import MultiPoint, Point, Polygon, mapping
-from tqdm.asyncio import tqdm_asyncio
-from tqdm.std import tqdm
 
 from src.config import QueryConfig, validate_config
 
@@ -99,14 +97,6 @@ def create_config(config_file: Path) -> QueryConfig:
     OmegaConf.save(config, config.save_dir / "config.yaml")
 
     return config
-
-
-# Load the correct progress bar class based on the run context (notebook vs CLI)
-def get_tqdm(use_async: bool) -> Type[tqdm]:
-    if use_async:
-        return tqdm_asyncio
-    else:
-        return tqdm
 
 
 def has_crs(geojson_path: Path) -> None:

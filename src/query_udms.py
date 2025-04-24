@@ -14,13 +14,13 @@ import pandas as pd
 import polars as pl
 from dotenv import find_dotenv, load_dotenv
 from planet import DataClient, Session, data_filter
-from shapely.geometry import Point, Polygon, shape
+from shapely.geometry import shape
+from tqdm.asyncio import tqdm_asyncio
 
 from src.config import ItemType, QueryConfig, planet_asset_string
 from src.util import (
     check_and_create_env,
     create_config,
-    get_tqdm,
     make_cell_geom,
     polygon_to_geojson_dict,
     retry_task,
@@ -28,6 +28,25 @@ from src.util import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_grid_save_path(grid_save_dir: Path, index: int) -> Path:
+    hex_id = f"{index:06x}"  # unique 6‑digit hex, e.g. '0f1a2b'
+    d1, d2, d3 = hex_id[:2], hex_id[2:4], hex_id[4:6]
+    grid_save_path = grid_save_dir / d1 / d2 / d3
+    grid_save_path.mkdir(exist_ok=True, parents=True)
+    return grid_save_path
+
+
+async def create_search_if_missing(sess, cell_geom, index, config, start_date, end_date):
+    grid_save_path = get_grid_save_path(config.save_dir, index)
+    search_request_path = grid_save_path / "search_request.json"
+    if not search_request_path.exists():
+        search_filter = create_search_filter(start_date, end_date, polygon_to_geojson_dict(cell_geom), config)
+        search_name = f"{config.udm_search_name}_{index}_{start_date.date().isoformat()}_{end_date.date().isoformat()}"
+        search_request = await create_search(sess, search_name, search_filter, config)
+        with open(search_request_path, "w") as f:
+            json.dump(search_request, f)
 
 
 # Asynchronously creates a search request with the given search filter. Returns the created search request.
@@ -97,28 +116,6 @@ def create_search_filter(start_date: datetime, end_date: datetime, grid_geojson:
     return all_filters
 
 
-# Asynchronously performs a search for imagery using the given geometry, and start/end dates.
-# Returns a list of items found by the search.
-async def search(
-    sess: Session,
-    grid_geojson: dict,
-    index: int,
-    config: QueryConfig,
-    grid_save_path: Path,
-    start_date: datetime,
-    end_date: datetime,
-) -> AsyncIterator[dict]:
-    search_filter = create_search_filter(start_date, end_date, grid_geojson, config)
-
-    search_name = f"{config.udm_search_name}_{index}_{start_date.date().isoformat()}_{end_date.date().isoformat()}"
-    search_request = await create_search(sess, search_name, search_filter, config)
-    with open(grid_save_path / "search_request.json", "w") as f:
-        json.dump(search_request, f)
-
-    # search for matches
-    return do_search(sess, search_request, config)
-
-
 # Data class for DataFrame rows
 @dataclass
 class DataFrameRow:
@@ -180,46 +177,29 @@ def dataframe_row(item: dict, index: int) -> DataFrameRow:
 async def process_cell(
     sess: Session,
     config: QueryConfig,
-    start_date: datetime,
-    end_date: datetime,
-    poly: Polygon | Point,
+    search_request: dict,
     cell_df: gpd.GeoDataFrame,
     index: int,
-    pbar,
 ) -> None:
     """Download results for 1 cell (N points) and save the results to a parquet file.
 
     Args:
         sess (Session): The planet Session
         config (QueryConfig): The QueryConfig
-        start_date (datetime): start
-        end_date (datetime): end
-        poly (Polygon): The search area
+        search_request (dict): the created search request
         cell_df (GeoDataFrame): The dataframe of points belonging to this cell
         index (int): The cells's index
-        pbar (_type_): The progress bar
     """
     try:
-        hex_id = f"{index:06x}"  # unique 6‑digit hex, e.g. '0f1a2b'
-        d1, d2, d3 = hex_id[:2], hex_id[2:4], hex_id[4:6]
-        grid_save_path = config.save_dir / d1 / d2 / d3
-        grid_save_path.mkdir(exist_ok=True, parents=True)
-
+        grid_save_path = get_grid_save_path(config.save_dir, index)
         results_path = grid_save_path / "data.parquet"
 
         if results_path.exists():
-            pbar.update(1)
             return
 
-        grid_geojson = polygon_to_geojson_dict(poly)  # type: ignore
-
         async def _collect_lazy():
-            now = datetime.now()
-            lazy = await search(sess, grid_geojson, index, config, grid_save_path, start_date, end_date)
-            result = [i async for i in lazy]
-            time_diff = datetime.now() - now
-            logger.info(f"Took {time_diff.seconds} to download {len(result)} items for grid {index}")
-            return result
+            lazy = do_search(sess, search_request, config)
+            return [i async for i in lazy]
 
         item_list = await retry_task(_collect_lazy, config.download_retries_max, config.download_backoff)
 
@@ -248,8 +228,6 @@ async def process_cell(
     except Exception as e:
         logger.error(f"Grid {index} failed")
         logger.exception(e)
-
-    pbar.update(1)
 
 
 # Gets a list of all UDMs which match grid points and start/end date range.
@@ -284,30 +262,56 @@ async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, 
     cells = gpd.GeoDataFrame(grouped, geometry="cell_geom", crs="EPSG:4326")
     total = len(cells)
 
-    tqdm = get_tqdm(use_async=True)
-    with tqdm(total=total, desc="Grids", position=0, dynamic_ncols=True) as pbar:
-        coros = []
-
+    # Phase A: create searches
+    async def create_searches():
+        tasks = []
         for index, row in cells.iterrows():
             cell = row["cell_geom"]
+            task = asyncio.create_task(
+                create_search_if_missing(
+                    sess=sess,
+                    cell_geom=cell,
+                    index=index,
+                    config=config,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            )
+            tasks.append(task)
+
+        for task in tqdm_asyncio.as_completed(tasks, total=total, desc="Create Searches", dynamic_ncols=True):
+            await task
+
+    await create_searches()
+
+    # Phase B: download items
+    async def download_items():
+        tasks = []
+        for index, row in cells.iterrows():
             orig_idxs = row["grid_index"]  # the list of points in this cell
             subset = gdf.take(orig_idxs)  # very fast positional slicing
             subset = subset.set_geometry("geometry")  # ensure geometry col
+
+            grid_save_path = get_grid_save_path(config.save_dir, index)  # type: ignore
+
+            with open(grid_save_path / "search_request.json") as f:
+                search_request = json.load(f)
 
             task = asyncio.create_task(
                 process_cell(
                     sess=sess,
                     config=config,
-                    start_date=start_date,
-                    end_date=end_date,
-                    poly=cell,
+                    search_request=search_request,
                     cell_df=subset,
                     index=index,  # type: ignore
-                    pbar=pbar,
                 )
             )
-            coros.append(task)
-        _ = await asyncio.gather(*coros)
+            tasks.append(task)
+
+        for task in tqdm_asyncio.as_completed(tasks, total=total, desc="Download Items", dynamic_ncols=True):
+            await task
+
+    await download_items()
 
 
 # Main loop. Query all overlapping UDMs for a given date and set of grid points.

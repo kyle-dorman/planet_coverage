@@ -15,10 +15,13 @@ dependencies:
   - click
   - python-dotenv
   - omegaconf
+  # Analysis
   - numpy
   - pandas
   - pyhdf
   - polars
+  - duckdb
+  - pyarrow
   # Geo
   - rasterio 
   - shapely 
@@ -31,7 +34,6 @@ dependencies:
   - geopandas>=0.14.4
   - fiona>=1.10.0
   - pytmd
-  - pyarrow
   # Plotting
   - seaborn
   - matplotlib
