@@ -1,0 +1,51 @@
+name: planet_coverage
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  # Python
+  - python>=3.10.0
+  # basic Python build tools
+  - pip
+  - setuptools
+  - wheel
+  # Base
+  - PyYAML
+  - tqdm
+  - click
+  - python-dotenv
+  - omegaconf
+  - numpy
+  - pandas
+  - pyhdf
+  # Geo
+  - rasterio 
+  - shapely 
+  - xarray 
+  - folium 
+  - gdal
+  - planet
+  # Upgrade geopandas and fiona together
+  # https://stackoverflow.com/questions/78949093/how-to-resolve-attributeerror-module-fiona-has-no-attribute-path
+  - geopandas>=0.14.4
+  - fiona>=1.10.0
+  - pytmd
+  - pyarrow
+  # Plotting
+  - seaborn
+  - matplotlib
+  # Notebooks
+  - ipython
+  - notebook
+  - ipywidgets
+  - widgetsnbextension
+  # Linting
+  - black
+  - isort
+  - pyupgrade
+  - pygments
+  - flake8
+  - autopep8
+  - nptyping
+  - pip:
+      - -e .
