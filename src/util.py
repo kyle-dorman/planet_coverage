@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import multiprocessing as mp
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Type
@@ -118,25 +117,6 @@ def has_crs(geojson_path: Path) -> None:
     """
     gdf = gpd.read_file(geojson_path)
     assert gdf.crs is not None, "{} is missing a CRS"
-
-
-def check_all_has_crs(paths: list[Path], workers: int):
-    """
-    Parallelize has_crs over a list of Path objects.
-    Errors out on the first failure.
-    """
-    this_tqdm = get_tqdm(use_async=False)
-    # use fork instead of spawn to avoid semaphore leaks on macOS
-    ctx = mp.get_context("fork")
-    with ctx.Pool(processes=workers) as pool:
-        # executor.map will raise the first exception it encounters
-        for _ in this_tqdm(
-            pool.imap_unordered(has_crs, paths, chunksize=100),
-            total=len(paths),
-            desc="Checking CRS",
-        ):
-            pass
-    logger.info(f"✅ All {len(paths)} files have a CRS.")
 
 
 def is_within_n_days(target_date: datetime, date_list: Iterable[datetime], n_days: int) -> bool:

@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -9,6 +11,7 @@ import click
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import polars as pl
 from dotenv import find_dotenv, load_dotenv
 from planet import DataClient, Session, data_filter
 from shapely.geometry import Point, Polygon, shape
@@ -116,29 +119,62 @@ async def search(
     return do_search(sess, search_request, config)
 
 
-# Extract info from larger json result
-def dataframe_row(item: dict, index: int) -> dict:
-    # clear percentage isn't available for older data
-    if "clear_percent" in item["properties"]:
-        clear_percent = item["properties"]["clear_percent"]
-    else:
-        clear_percent = 1 - int(item["properties"]["cloud_cover"] * 100)
+# Data class for DataFrame rows
+@dataclass
+class DataFrameRow:
+    has_8_channel: bool
+    id: str
+    acquired: datetime
+    clear_percent: float
+    item_type: str
+    quality_category: str
+    satellite_azimuth: float
+    satellite_id: str
+    sun_azimuth: float
+    sun_elevation: float
+    view_angle: float
+    instrument: str
+    grid_idx: int
 
-    return {
-        "has_8_channel": "ortho_analytic_8b_sr" in item["assets"],
-        "id": item["id"],
-        "acquired": datetime.fromisoformat(item["properties"]["acquired"]),
-        "clear_percent": clear_percent,
-        "item_type": item["properties"]["item_type"],
-        "quality_category": item["properties"]["quality_category"],
-        "satellite_azimuth": item["properties"]["satellite_azimuth"],
-        "satellite_id": item["properties"]["satellite_id"],
-        "sun_azimuth": item["properties"]["sun_azimuth"],
-        "sun_elevation": item["properties"]["sun_elevation"],
-        "view_angle": item["properties"]["view_angle"],
-        "instrument": item["properties"].get("instrument", "SkySat"),
-        "grid_idx": index,
-    }
+    @classmethod
+    @lru_cache(1)
+    def polars_schema(cls) -> dict:
+        return {
+            "has_8_channel": pl.Boolean,
+            "id": pl.Utf8,
+            "acquired": pl.Datetime,
+            "clear_percent": pl.Float32,
+            "item_type": pl.Categorical,
+            "quality_category": pl.Categorical,
+            "satellite_azimuth": pl.Float32,
+            "satellite_id": pl.Categorical,
+            "sun_azimuth": pl.Float32,
+            "sun_elevation": pl.Float32,
+            "view_angle": pl.Float32,
+            "instrument": pl.Categorical,
+            "grid_idx": pl.UInt32,
+        }
+
+
+def dataframe_row(item: dict, index: int) -> DataFrameRow:
+    props = item["properties"]
+    clear_percent = props.get("clear_percent", 1 - int(props.get("cloud_cover", 0) * 100))
+
+    return DataFrameRow(
+        has_8_channel="ortho_analytic_8b_sr" in item.get("assets", {}),
+        id=item["id"],
+        acquired=datetime.fromisoformat(props["acquired"]),
+        clear_percent=clear_percent,
+        item_type=props["item_type"],
+        quality_category=props["quality_category"],
+        satellite_azimuth=props["satellite_azimuth"],
+        satellite_id=props["satellite_id"],
+        sun_azimuth=props["sun_azimuth"],
+        sun_elevation=props["sun_elevation"],
+        view_angle=props["view_angle"],
+        instrument=props.get("instrument", "SkySat"),
+        grid_idx=index,
+    )
 
 
 async def process_cell(
@@ -178,53 +214,35 @@ async def process_cell(
         grid_geojson = polygon_to_geojson_dict(poly)  # type: ignore
 
         async def _collect_lazy():
+            now = datetime.now()
             lazy = await search(sess, grid_geojson, index, config, grid_save_path, start_date, end_date)
-            return [i async for i in lazy]
+            result = [i async for i in lazy]
+            time_diff = datetime.now() - now
+            logger.info(f"Took {time_diff.seconds} to download {len(result)} items for grid {index}")
+            return result
 
         item_list = await retry_task(_collect_lazy, config.download_retries_max, config.download_backoff)
 
         rows = []
-        for item in item_list:
-            geom = item["geometry"]
-            item_geom: Polygon = shape(geom)  # type: ignore
+        if len(item_list):
+            # Build spatial index once outside loop
+            sindex = cell_df.sindex
 
-            for grid_idx in cell_df.geometry.intersection(item_geom).index:
-                rows.append(dataframe_row(item, grid_idx))
+            for item in item_list:
+                base_row = dataframe_row(item, 0)
+                item_geom = shape(item["geometry"])  # still need once
 
-        df = pd.DataFrame(
-            rows,
-            columns=[
-                "has_8_channel",
-                "id",
-                "acquired",
-                "clear_percent",
-                "item_type",
-                "quality_category",
-                "satellite_azimuth",
-                "satellite_id",
-                "sun_azimuth",
-                "sun_elevation",
-                "view_angle",
-                "instrument",
-                "grid_idx",
-            ],
-        )
-        # Convert select columns to a category to save space
-        for col in [
-            "grid_idx",
-            "instrument",
-            "satellite_id",
-            "quality_category",
-            "item_type",
-        ]:
-            df[col] = df[col].astype("category")
+                possible_matches = sindex.intersection(item_geom.bounds)
+                matching = cell_df.iloc[possible_matches]
 
-        # Save as parquet
-        df.to_parquet(
+                for idx in matching[matching.intersects(item_geom)].index:
+                    rows.append(replace(base_row, grid_idx=idx))
+
+        df = pl.DataFrame(rows, schema=DataFrameRow.polars_schema())  # type: ignore
+
+        # Save as Parquet using Polars (automatically optimizes types)
+        df.write_parquet(
             results_path,
-            engine="pyarrow",
-            compression="zstd",
-            compression_level=22,
         )
 
     except Exception as e:
