@@ -89,3 +89,10 @@ conda activate planet_coverage
 conda env update --file environment.yml --prune
 conda activate planet_coverage
 ```
+
+## modis_land_cover.py
+To check if a point would be classified as land or not (and thus included in Roy), we need to load the modis hdf files. pyhdf is really annoying to work with so there is a separate conda env for this, modis_environment.yml. Create and activate it as you would the other environment. Only need to do this once!
+```bash
+conda env create -f modis_environment.yml
+conda activate modis_env
+```

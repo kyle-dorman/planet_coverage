@@ -18,10 +18,11 @@ dependencies:
   # Analysis
   - numpy
   - pandas
-  - pyhdf
   - polars
   - duckdb
-  - pyarrow
+  - pyarrow>=14.0.1
+  - dask
+  - dask-geopandas
   # Geo
   - rasterio 
   - shapely 
@@ -34,6 +35,8 @@ dependencies:
   - geopandas>=0.14.4
   - fiona>=1.10.0
   - pytmd
+  - earthengine-api
+  - earthaccess
   # Plotting
   - seaborn
   - matplotlib

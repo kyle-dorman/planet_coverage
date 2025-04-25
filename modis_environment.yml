@@ -1,0 +1,12 @@
+name: modis_env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - click
+  - geopandas
+  - numpy               # array operations
+  - pyhdf               # HDF4 (for .hdf datasets)
+  - tqdm
+  - rasterio
+  - libgdal-hdf4
