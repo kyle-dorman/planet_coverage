@@ -115,7 +115,7 @@ def write_results(pts_h: gpd.GeoDataFrame, is_land: np.ndarray, output_path: Pat
     """
     pts_out = pts_h.copy()
     pts_out["is_land"] = is_land
-    pts_out.to_file(str(output_path), layer="points_land", driver="GPKG")
+    pts_out.to_file(output_path, driver="GPKG")
 
 
 @click.command()

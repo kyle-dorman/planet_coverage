@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-filter_coastal_points.py
+select_points.py
 
 Generate a regular Sinusoidal grid, buffer points and retain only those
 that intersect coastal strips.  Uses a prepared union for lightning-fast
@@ -8,96 +8,120 @@ intersection tests, Dask parallelism, and a live progress bar.
 """
 import logging
 import multiprocessing as mp
-from pathlib import Path
 
+import click
 import dask_geopandas as dgpd
 import geopandas as gpd
 import numpy as np
 from shapely.prepared import prep
 
-# ------------------------------------------------------------------
-# Configuration
-# ------------------------------------------------------------------
-COASTAL_GPKG = Path("/Users/kyledorman/data/shorelines/coastal_strips.gpkg")
-COASTAL_LAYER = "coastal_strips"
-OUTPUT_PATH = Path("/Users/kyledorman/data/shorelines/points_in_coastal_strips.gpkg")
-SINUSOIDAL = "ESRI:54008"  # equal-area sinusoidal
-PROJ_CRS = "EPSG:6933"
-STEP = 5_559.7522  # grid spacing in metres
-BUFFER_FACTOR = 0.5  # fraction of step for buffer radius
-BUFFER_RADIUS = STEP * BUFFER_FACTOR
-N_PARTITIONS = int(mp.cpu_count()) - 1  # Dask partitions
-
-# ------------------------------------------------------------------
-# Setup logging
-# ------------------------------------------------------------------
 logging.basicConfig(format="%(asctime)s %(levelname)s: %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------------
-# 1. Load & prepare coastal strips
-# ------------------------------------------------------------------
-logger.info("Loading coastal strips from %s (layer %s)", COASTAL_GPKG, COASTAL_LAYER)
-coastal = gpd.read_file(COASTAL_GPKG, layer=COASTAL_LAYER)
-assert coastal.crs == PROJ_CRS
-assert len(coastal) == 1
-logger.info("Loaded %d coastal features", len(coastal))
 
-# ------------------------------------------------------------------
-# 2. Build regular grid of points in Sinusoidal
-# ------------------------------------------------------------------
-minx, miny, maxx, maxy = coastal.to_crs(SINUSOIDAL).total_bounds
-xs = np.arange(minx, maxx + STEP, STEP)
-ys = np.arange(miny, maxy + STEP, STEP)
-xx, yy = np.meshgrid(xs, ys)
-
-logger.info("Generating grid: %d cols × %d rows = %d points", len(xs), len(ys), xx.size)
-grid = gpd.GeoDataFrame(geometry=gpd.points_from_xy(xx.ravel(), yy.ravel()), crs=SINUSOIDAL)
-logger.info("Grid created: %d points", len(grid))
-
-# ------------------------------------------------------------------
-# 3. Dask GeoDataFrame & prepared intersection filter
-# ------------------------------------------------------------------
-logger.info("Converting grid to Dask GeoDataFrame with %d partitions", N_PARTITIONS)
-dask_grid: dgpd.GeoDataFrame = dgpd.from_geopandas(grid, npartitions=N_PARTITIONS)
-
-
-def filter_partition(df: gpd.GeoDataFrame, partition_info=None):
+def load_coastal(path: str, proj_crs: str) -> gpd.GeoDataFrame:
     """
-    Buffer all points in the partition and test intersects against the
-    prepared coastal union. Returns only points that intersect.
+    Load coastal strips GeoPackage and verify CRS.
     """
-    if partition_info is not None:
-        part = partition_info["number"]
-    else:
-        part = -1
+    logger.info("Loading coastal strips from %s", path)
+    coastal = gpd.read_file(path)
+    assert coastal.crs is not None
+    assert coastal.crs.to_string() == proj_crs, f"Expected CRS {proj_crs}, got {coastal.crs}"
+    assert len(coastal) == 1, "No coastal features found"
+    return coastal
 
-    # buffer all at once
-    logger.info(f"{part}: buffering and projecting")
-    buffered = df.to_crs(PROJ_CRS).geometry.buffer(BUFFER_RADIUS)
 
-    # Build a prepared MultiPolygon for fast intersects
-    logger.info(f"{part}: preparing data")
+def generate_grid(coastal: gpd.GeoDataFrame, sinus_crs: str, step: float) -> gpd.GeoDataFrame:
+    """
+    Generate a regular grid in sinusoidal projection covering coastal bounds.
+    """
+    bounds = coastal.to_crs(sinus_crs).total_bounds
+    minx, miny, maxx, maxy = bounds
+    xs = np.arange(minx, maxx + step, step)
+    ys = np.arange(miny, maxy + step, step)
+    logger.info("Generating grid: %d cols × %d rows = %d points", len(xs), len(ys), xs.size * ys.size)
+    xx, yy = np.meshgrid(xs, ys)
+    grid = gpd.GeoDataFrame(geometry=gpd.points_from_xy(xx.ravel(), yy.ravel()), crs=sinus_crs)
+    return grid
+
+
+def filter_partition(
+    df: gpd.GeoDataFrame, coastal: gpd.GeoDataFrame, buffer_radius: float, proj_crs: str
+) -> gpd.GeoDataFrame:
+    """
+    Buffer points and keep those intersecting the coastal union.
+    """
+    # Buffer points in projected CRS
+    buffered = df.to_crs(proj_crs).geometry.buffer(buffer_radius)
+    # Prepare coastal union for fast intersects
     coastal_union = coastal.union_all(method="coverage")
     prep_coastal = prep(coastal_union)
-
-    # vectorized intersects via prepared geom
-    logger.info(f"{part}: compute intersection")
     mask = buffered.apply(lambda geom: prep_coastal.intersects(geom))
-    logger.info(f"{part}: returning results")
     return df.loc[mask]
 
 
-logger.info("Filtering grid in parallel using prepared geometry…")
-filtered_dask = dask_grid.map_partitions(filter_partition, meta=dask_grid._meta)
+def save_points(df: gpd.GeoDataFrame, output_path: str) -> None:
+    """
+    Save filtered points to GeoPackage.
+    """
+    logger.info("Saving %d points to %s", len(df), output_path)
+    df.to_file(output_path, driver="GPKG")
 
-logger.info("Computing results")
-points_in_coast: gpd.GeoDataFrame = filtered_dask.compute()
-logger.info("Filtered point count: %d", len(points_in_coast))
 
-# ------------------------------------------------------------------
-# 4. Save filtered points
-# ------------------------------------------------------------------
-logger.info("Saving to %s", OUTPUT_PATH)
-points_in_coast.to_file(OUTPUT_PATH, driver="GPKG")
-logger.info("Done!")
+@click.command()
+@click.option(
+    "--coastal-path", "-c", type=click.Path(exists=True), required=True, help="Path to coastal strips GeoPackage"
+)
+@click.option("--output-path", "-o", type=click.Path(), required=True, help="Output GeoPackage for filtered points")
+@click.option("--sinus-crs", default="ESRI:54008", show_default=True, help="Sinusoidal CRS code for grid")
+@click.option("--proj-crs", default="EPSG:6933", show_default=True, help="Projected CRS for buffering")
+@click.option("--step", type=float, default=5559.7522, show_default=True, help="Grid spacing in meters")
+@click.option("--buffer-factor", type=float, default=0.5, show_default=True, help="Fraction of step for buffer radius")
+@click.option(
+    "--partitions",
+    type=int,
+    default=mp.cpu_count() - 1,
+    help="Number of Dask partitions; defaults to CPU count minus one",
+)
+def main(
+    coastal_path: str,
+    output_path: str,
+    sinus_crs: str,
+    proj_crs: str,
+    step: float,
+    buffer_factor: float,
+    partitions: int,
+) -> None:
+    # Determine partitions
+    partitions = min(partitions, mp.cpu_count() - 1)
+
+    # Load and prepare data
+    coastal = load_coastal(coastal_path, proj_crs)
+    grid = generate_grid(coastal, sinus_crs, step)
+
+    # Convert to Dask GeoDataFrame
+    logger.info("Converting grid to Dask GeoDataFrame with %d partitions", partitions)
+    dask_grid: dgpd.GeoDataFrame = dgpd.from_geopandas(grid, npartitions=partitions)
+
+    # Prepare buffer and coastal union
+    buffer_radius = step * buffer_factor
+
+    # Filter partitions
+    logger.info("Filtering grid in parallel using prepared geometry…")
+    filtered = dask_grid.map_partitions(
+        filter_partition,
+        coastal,
+        buffer_radius,
+        proj_crs,
+        meta=dask_grid._meta,
+    )
+    logger.info("Computing filtered points")
+    result = filtered.compute()
+    logger.info("Filtered point count: %d", len(result))
+
+    # Save output
+    save_points(result, output_path)
+
+
+if __name__ == "__main__":
+    main()

@@ -24,7 +24,7 @@ def download_batch(collection: str, offset: int, base_dir: Path, page_size: int)
     save_dir.mkdir(parents=True, exist_ok=True)
     output_path = save_dir / f"{offset}.geojson"
     if output_path.exists():
-        return offset  # already downloaded
+        return  # already downloaded
 
     asset_id = f"projects/sat-io/open-datasets/shoreline/{collection}"
     fc = ee.FeatureCollection(asset_id)
@@ -136,7 +136,7 @@ def main(
         # Download all collections
         download_collections(temp_base, collections, page_size_dict, workers)
 
-        # Load all JSONs per collection and write to Parquet
+        # Load all JSONs per collection and write to GPKG
         for coll in collections:
             json_files = list((temp_base / coll).glob("*.geojson"))
             if not json_files:
@@ -149,9 +149,9 @@ def main(
             assert len(df_list)
             gdf = gpd.GeoDataFrame(pd.concat(df_list, ignore_index=True), crs=df_list[0].crs)
 
-            out_path = base_path / f"{coll}.parquet"
+            out_path = base_path / f"{coll}.gpkg"
             logger.info(f"Writing {len(gdf)} features for '{coll}' to {out_path}")
-            gdf.to_parquet(path=out_path, engine="pyarrow")
+            gdf.to_file(out_path, driver="GPKG")
 
     logger.info("Workflow complete")
 
