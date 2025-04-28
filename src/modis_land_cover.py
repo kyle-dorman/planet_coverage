@@ -12,7 +12,6 @@ all attributes.
 import logging
 from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import click
 import geopandas as gpd
@@ -35,7 +34,7 @@ def open_sd(path: Path):
         sd.end()
 
 
-def get_hdf_sources(modis_dir: Path, sds_name: str) -> Tuple[List[Path], str]:
+def get_hdf_sources(modis_dir: Path, sds_name: str) -> tuple[list[Path], str]:
     """
     Discover HDF files in modis_dir, verify they share one CRS and transform,
     and return (list of HDF paths, common CRS, affine transform).
@@ -58,14 +57,12 @@ def get_hdf_sources(modis_dir: Path, sds_name: str) -> Tuple[List[Path], str]:
     return hdf_paths, str(common_crs)
 
 
-def prepare_points(
-    points_path: Path, layer: Optional[str], target_crs: str
-) -> Tuple[gpd.GeoDataFrame, np.ndarray, np.ndarray]:
+def prepare_points(points_path: Path, target_crs: str) -> tuple[gpd.GeoDataFrame, np.ndarray, np.ndarray]:
     """
-    Load point GeoDataFrame at points_path (optionally layer), verify Sinusoidal CRS,
+    Load point GeoDataFrame at points_path, verify Sinusoidal CRS,
     reproject to target_crs, and return (GeoDataFrame, xs, ys).
     """
-    pts = gpd.read_file(points_path, layer=layer) if layer else gpd.read_file(points_path)
+    pts = gpd.read_file(points_path)
     assert pts.crs is not None and pts.crs.to_string().startswith(
         "ESRI:54008"
     ), f"Points must be ESRI:54008, got {pts.crs}"
@@ -76,7 +73,7 @@ def prepare_points(
 
 
 def classify_points(
-    hdf_paths: List[Path],
+    hdf_paths: list[Path],
     sds_name: str,
     xs_h: np.ndarray,
     ys_h: np.ndarray,
@@ -109,24 +106,13 @@ def classify_points(
     return is_land
 
 
-def write_results(pts_h: gpd.GeoDataFrame, is_land: np.ndarray, output_path: Path) -> None:
-    """
-    Add is_land to pts_h and write out as a GeoPackage.
-    """
-    pts_out = pts_h.copy()
-    pts_out["is_land"] = is_land
-    pts_out.to_file(output_path, driver="GPKG")
-
-
 @click.command()
 @click.option("--points", type=click.Path(exists=True), required=True, help="GeoPackage of point geometries")
-@click.option("--layer", default=None, help="Layer name in GeoPackage; defaults to first")
 @click.option("--modis-dir", type=click.Path(exists=True), required=True, help="Directory of MCD12Q1 HDF files")
 @click.option("--output-dir", type=click.Path(), required=True, help="Directory to write GeoPackage")
 @click.option("--sds-name", default="LC_Type1", show_default=True, help="HDF SDS name for land cover")
 def main(
     points: str,
-    layer: str | None,
     modis_dir: str,
     output_dir: str,
     sds_name: str,
@@ -135,21 +121,24 @@ def main(
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     logger = logging.getLogger(__name__)
     pts_path = Path(points)
-    out_fp = Path(output_dir) / "points_land.gpkg"
+    out_fp = Path(output_dir) / "points_land.npy"
 
     # Discover HDF tiles and metadata
     hdf_paths, hdf_crs = get_hdf_sources(Path(modis_dir), sds_name)
     logger.info(f"Found {len(hdf_paths)} HDF tiles with CRS {hdf_crs}")
 
     # Prepare and reproject points
-    pts_h, xs_h, ys_h = prepare_points(pts_path, layer, hdf_crs)
+    pts_h, xs_h, ys_h = prepare_points(pts_path, hdf_crs)
 
     # Classify land/water
     is_land = classify_points(hdf_paths, sds_name, xs_h, ys_h)
 
+    pct_land = 100 * is_land.sum() / len(is_land)
+    logger.info(f"{pct_land:1f}% are land point")
+
     # Write output
     logger.info(f"Writing results to {out_fp}")
-    write_results(pts_h, is_land, out_fp)
+    np.save(out_fp, is_land)
     logger.info("Workflow complete")
 
 
