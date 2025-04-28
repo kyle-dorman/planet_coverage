@@ -1,155 +1,332 @@
+import logging
 import math
-from pathlib import Path
+from typing import Tuple
 
+import click
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import unary_union
 
-# === CONFIGURATION ===
-MAINLANDS_GPKG = Path("/Users/kyledorman/data/shorelines/mainlands.gpkg")
-SMALL_ISLANDS_GPKG = Path("/Users/kyledorman/data/shorelines/small_islands.gpkg")
-BIG_ISLANDS_GPKG = Path("/Users/kyledorman/data/shorelines/big_islands.gpkg")
-OUTPUT_GPKG = Path("/Users/kyledorman/data/shorelines/coastal_strips.gpkg")
-OUTPUT_LAYER = "coastal_strips"
-PROJ_CRS = "EPSG:6933"
-IN_CRS = "EPSG:4326"
-BUFFER_INNER = 1000  # m
-BUFFER_OUTER = 2000  # m
-COASTAL_BUFFER = 2000  # m
-COASTAL_BUFFER_WIDTH = COASTAL_BUFFER + BUFFER_OUTER - BUFFER_INNER
-SMALL_LAND_AREA = COASTAL_BUFFER_WIDTH**2 * math.pi / 1e6  # km²
-MID_LAND_AREA = SMALL_LAND_AREA**2  # km²
-N_PARTITIONS = 16
-PRE_SIMPLIFY_TOL = 50  # m
-POST_SIMPLIFY_TOL = 200  # m
-SELF_BUFFER_EXTRA = 100  # m for same-index carve
-
-# Utility to clean internal holes
+# Configure logger
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
-def remove_internal_polygons(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    cleaned = []
-    for geom in gdf.geometry:
-        if isinstance(geom, Polygon):
-            cleaned.append(geom)
-        elif isinstance(geom, MultiPolygon):
-            polys = list(geom.geoms)
-            keepers = []
-            for i, p1 in enumerate(polys):
-                if not any(i != j and p1.within(p2) for j, p2 in enumerate(polys)):
-                    keepers.append(p1)
-            geom2 = keepers[0] if len(keepers) == 1 else MultiPolygon(keepers)
-            cleaned.append(geom2)
-        else:
-            cleaned.append(geom)
-    out = gdf.copy()
-    out.geometry = cleaned
-    return out
+def clean_invalid(df: gpd.GeoDataFrame):
+    # Clean invalid geometries inplace
+    invalid = ~df.geometry.is_valid
+    df.loc[invalid, "geometry"] = df.geometry[invalid].buffer(0)
 
 
-# Large land carve + buffer logic
-def process_large_land(df: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    # project
-    df = df.to_crs(PROJ_CRS)
-    # pre-simplify
-    df.geometry = df.geometry.simplify(PRE_SIMPLIFY_TOL, preserve_topology=True)
-    # inner buffer
-    df_inner = gpd.GeoDataFrame(df)
-    df_inner.geometry = df.geometry.buffer(BUFFER_INNER)
-    # build global index once
-    index = df_inner.sindex
-    geoms_list = list(df_inner.geometry)
-    # carve
+# Helper for projection & simplification
+def preprocess_geometry(
+    df: gpd.GeoDataFrame,
+    proj_crs: str,
+    tol: float,
+) -> gpd.GeoDataFrame:
+    """
+    Reproject the GeoDataFrame to proj_crs and simplify geometries with given tolerance.
+    """
+    assert not df.geometry.is_empty.any()
+
+    # Project
+    df = df.to_crs(proj_crs)
+
+    # Remove GeometryCollection types
+    non_polygon = df.geometry.geom_type == "GeometryCollection"
+    df.loc[non_polygon, "geometry"] = df.geometry[non_polygon].buffer(0)
+
+    # Clean
+    clean_invalid(df)
+
+    # Simplify
+    df.geometry = df.geometry.simplify(tol, preserve_topology=True)
+
+    # Clean
+    clean_invalid(df)
+    return df
+
+
+def finalize_strips(
+    geometries,
+    proj_crs: str,
+) -> gpd.GeoDataFrame:
+    """
+    Apply final CRS, drop empty geometries, and remove internal holes.
+    """
+    df = gpd.GeoDataFrame(geometry=geometries, crs=proj_crs)
+
+    # Remove empty
+    df = df[~df.geometry.is_empty]
+
+    # Clean
+    clean_invalid(df)
+
+    return df
+
+
+# Buffer computation helper
+def compute_buffers(land_km: int, water_km: int) -> Tuple[float, float, float]:
+    """
+    Given land and water coverage in km (>=1), compute:
+    buffer_inner, buffer_outer, coastal_buffer in meters.
+    """
+    # Convert to meters
+    land_m = land_km * 1000
+    water_m = water_km * 1000
+    # Center and ±500 m ring
+    center = (water_m - land_m) / 2
+    buffer_inner = center - 500
+    assert buffer_inner >= 0, "Inner buffer must maintain or expand the geometries to find a shoreline."
+    buffer_outer = center + 500
+    coastal_buffer = water_m - buffer_outer
+    return buffer_inner, buffer_outer, coastal_buffer
+
+
+def process_large_land(
+    df: gpd.GeoDataFrame,
+    proj_crs: str,
+    pre_simplify_tol: float,
+    buffer_inner: float,
+    buffer_outer: float,
+    coastal_buffer: float,
+    self_buffer_extra: float,
+) -> gpd.GeoDataFrame:
+    """
+    Process mainland or large islands: buffer carve and generate coastal strip.
+    """
+    df = preprocess_geometry(df, proj_crs, pre_simplify_tol)
+
+    inner = df.geometry.buffer(buffer_inner)
+    index = inner.sindex
+    outer = df.geometry.buffer(buffer_outer)
+
     carved = []
-    for idx, geom in zip(df.index, df.geometry.buffer(BUFFER_OUTER)):
-        for j in index.intersection(geom.bounds):
-            other = geoms_list[j]
-            if idx == j:
-                other = other.buffer(SELF_BUFFER_EXTRA)
+    # Iterate using actual DataFrame indices to remain consistent
+    for row_idx, geom in zip(outer.index, outer):
+        positions = index.intersection(geom.bounds)
+        labels = inner.index[positions]
+        others: gpd.GeoSeries = inner.loc[labels]  # type: ignore
+        for other_idx, other in zip(labels, others):
+            # If this is the same feature, apply extra self-buffer
+            if row_idx == other_idx:
+                other = other.buffer(self_buffer_extra)
             if geom.intersects(other):
                 geom = geom.difference(other)
-        carved.append(geom.buffer(COASTAL_BUFFER))
-    out = gpd.GeoDataFrame(geometry=carved, crs=PROJ_CRS)
-    out = out[~out.geometry.is_empty]
-    out = remove_internal_polygons(out)
-    return out
+        # Buffer the carved geometry by coastal_buffer
+        carved.append(geom.buffer(coastal_buffer))
+
+    return finalize_strips(carved, proj_crs)
 
 
-# Mid islands logic
-def process_mid_islands(df: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    df = df.to_crs(PROJ_CRS)
-    df.geometry = df.geometry.simplify(PRE_SIMPLIFY_TOL, preserve_topology=True)
-    outer = df.geometry.buffer(BUFFER_OUTER)
-    inner = df.geometry.buffer(BUFFER_INNER)
-    ring = outer.difference(inner)
-    ring = ring.buffer(COASTAL_BUFFER)
-    out = gpd.GeoDataFrame(geometry=ring, crs=PROJ_CRS)
-    out = out[~out.geometry.is_empty]
-    return remove_internal_polygons(out)
+def process_mid_islands(
+    df: gpd.GeoDataFrame,
+    mainlands: gpd.GeoDataFrame,
+    proj_crs: str,
+    pre_simplify_tol: float,
+    buffer_inner: float,
+    buffer_outer: float,
+    coastal_buffer: float,
+) -> gpd.GeoDataFrame:
+    """
+    Process mid-sized islands: ring buffer yield.
+    """
+    df = preprocess_geometry(df, proj_crs, pre_simplify_tol)
+
+    outer = df.geometry.buffer(buffer_outer)
+    inner = df.geometry.buffer(buffer_inner)
+    ring = outer.difference(inner).buffer(coastal_buffer)
+
+    index = mainlands.geometry.sindex
+
+    carved = []
+    # Iterate using actual DataFrame indices to remain consistent
+    for geom in ring:
+        positions = index.intersection(geom.bounds)
+        labels = mainlands.geometry.index[positions]
+        others: gpd.GeoSeries = mainlands.geometry.loc[labels]  # type: ignore
+        for other in others:
+            if geom.intersects(other):
+                geom = geom.difference(other)
+        carved.append(geom)
+
+    return finalize_strips(carved, proj_crs)
 
 
-# Small islands logic
-def process_small_islands(df: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    df = df.to_crs(PROJ_CRS)
-    df.geometry = df.geometry.simplify(PRE_SIMPLIFY_TOL, preserve_topology=True)
-    buf = df.geometry.buffer(COASTAL_BUFFER_WIDTH)
-    out = gpd.GeoDataFrame(geometry=buf, crs=PROJ_CRS)
-    out = out[~out.geometry.is_empty]
-    return remove_internal_polygons(out)
+def process_small_islands(
+    df: gpd.GeoDataFrame,
+    mainlands: gpd.GeoDataFrame,
+    proj_crs: str,
+    pre_simplify_tol: float,
+    coastal_buffer_width: float,
+) -> gpd.GeoDataFrame:
+    """
+    Process small islands: single buffer.
+    """
+    df = preprocess_geometry(df, proj_crs, pre_simplify_tol)
+
+    buf = df.geometry.buffer(coastal_buffer_width)
+
+    index = mainlands.geometry.sindex
+
+    carved = []
+    # Iterate using actual DataFrame indices to remain consistent
+    for geom in buf:
+        positions = index.intersection(geom.bounds)
+        labels = mainlands.geometry.index[positions]
+        others: gpd.GeoSeries = mainlands.geometry.loc[labels]  # type: ignore
+        for other in others:
+            if geom.intersects(other):
+                geom = geom.difference(other)
+        carved.append(geom)
+
+    return finalize_strips(carved, proj_crs)
 
 
-# Main
+@click.command()
+@click.option(
+    "--mainlands", "mainlands_gpkg", type=click.Path(exists=True), required=True, help="Path to mainlands GeoPackage"
+)
+@click.option(
+    "--big-islands",
+    "big_islands_gpkg",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to big islands GeoPackage",
+)
+@click.option(
+    "--small-islands",
+    "small_islands_gpkg",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to small islands GeoPackage",
+)
+@click.option("--output-file", "-o", type=click.Path(), required=True, help="Path for output GeoPackage file")
+@click.option("--proj-crs", default="ESRI:54008", show_default=True, help="Projected CRS for buffering operations")
+@click.option(
+    "--land-buffer-km",
+    type=click.IntRange(1, None),
+    default=1,
+    show_default=True,
+    help="Coverage over land in kilometers (>=1 km)",
+)
+@click.option(
+    "--water-buffer-km",
+    type=click.IntRange(1, None),
+    default=1,
+    show_default=True,
+    help="Coverage over water in kilometers (>=1 km)",
+)
+@click.option(
+    "--self-buffer-extra", type=float, default=100, show_default=True, help="Extra buffer for carving self overlaps (m)"
+)
+@click.option(
+    "--pre-simplify-tol",
+    type=float,
+    default=50,
+    show_default=True,
+    help="Tolerance for pre-buffer geometry simplification (m)",
+)
+@click.option(
+    "--post-simplify-tol",
+    type=float,
+    default=200,
+    show_default=True,
+    help="Tolerance for post-dissolve simplification (m)",
+)
+def main(
+    mainlands_gpkg: str,
+    big_islands_gpkg: str,
+    small_islands_gpkg: str,
+    output_file: str,
+    proj_crs: str,
+    land_buffer_km: int,
+    water_buffer_km: int,
+    self_buffer_extra: float,
+    pre_simplify_tol: float,
+    post_simplify_tol: float,
+) -> None:
+    """
+    Extract coastal strips from mainlands and islands, and write to GeoParquet.
+    """
+
+    logger.info("Loading source layers")
+    mldf = gpd.read_file(mainlands_gpkg)
+    bidf = gpd.read_file(big_islands_gpkg)
+    sidf = gpd.read_file(small_islands_gpkg)
+
+    mldf_simp = preprocess_geometry(mldf, proj_crs=proj_crs, tol=pre_simplify_tol)
+
+    # Compute buffer distances
+    buffer_inner, buffer_outer, coastal_buffer = compute_buffers(land_buffer_km, water_buffer_km)
+    logger.info(f"Computed buffers (m): inner={buffer_inner}, outer={buffer_outer}, coastal={coastal_buffer}")
+
+    # Partition big islands
+    small_area = land_buffer_km**2 * math.pi
+    mid_area = small_area**2
+    large_islands = bidf[bidf.Area_km2 > mid_area].reset_index(drop=True)
+    mid_islands = bidf[(bidf.Area_km2 <= mid_area) & (bidf.Area_km2 > small_area)].reset_index(drop=True)
+
+    logger.info("Processing mainlands")
+    coast_main = process_large_land(
+        df=mldf,
+        proj_crs=proj_crs,
+        pre_simplify_tol=pre_simplify_tol,
+        buffer_inner=buffer_inner,
+        buffer_outer=buffer_outer,
+        coastal_buffer=coastal_buffer,
+        self_buffer_extra=self_buffer_extra,
+    )
+
+    logger.info("Processing large islands")
+    coast_large = process_large_land(
+        df=large_islands,
+        proj_crs=proj_crs,
+        pre_simplify_tol=pre_simplify_tol,
+        buffer_inner=buffer_inner,
+        buffer_outer=buffer_outer,
+        coastal_buffer=coastal_buffer,
+        self_buffer_extra=self_buffer_extra,
+    )
+
+    logger.info("Processing mid islands")
+    coast_mid = process_mid_islands(
+        df=mid_islands,
+        mainlands=mldf_simp,
+        proj_crs=proj_crs,
+        pre_simplify_tol=pre_simplify_tol,
+        buffer_inner=buffer_inner,
+        buffer_outer=buffer_outer,
+        coastal_buffer=coastal_buffer,
+    )
+
+    logger.info("Processing small islands")
+    coast_small = process_small_islands(
+        df=sidf,
+        mainlands=mldf_simp,
+        proj_crs=proj_crs,
+        pre_simplify_tol=pre_simplify_tol,
+        coastal_buffer_width=water_buffer_km * 1000,
+    )
+
+    # Combine
+    logger.info("Combining strips")
+    combined = pd.concat([coast_main, coast_large, coast_mid, coast_small], ignore_index=True)
+    combined_gdf = gpd.GeoDataFrame(geometry=combined.geometry, crs=proj_crs)
+
+    # Dissolve and clean
+    logger.info("Dissolving geometries")
+    merged = unary_union(combined_gdf.geometry)
+    final = gpd.GeoDataFrame(geometry=[merged], crs=proj_crs)
+    clean_invalid(final)
+
+    # Post simplify
+    final.geometry = final.geometry.simplify(post_simplify_tol, preserve_topology=True)
+    clean_invalid(final)
+
+    logger.info(f"Writing output to {output_file}")
+    final.to_file(output_file, driver="GPKG")
+
+
 if __name__ == "__main__":
-    print("Loading features...")
-    mainlands = gpd.read_file(MAINLANDS_GPKG, layer="shorelines")
-    assert mainlands.crs == IN_CRS
-    big_islands = gpd.read_file(BIG_ISLANDS_GPKG, layer="shorelines")
-    assert big_islands.crs == IN_CRS
-    small_islands = gpd.read_file(SMALL_ISLANDS_GPKG, layer="shorelines")
-    assert small_islands.crs == IN_CRS
-
-    # partition big vs mid vs small
-    large_islands = big_islands[big_islands.Area_km2 > MID_LAND_AREA]
-    mid_islands = big_islands[(big_islands.Area_km2 <= MID_LAND_AREA) & (big_islands.Area_km2 > SMALL_LAND_AREA)]
-    # process each separately
-    print("Processing mainlands...")
-    coast_main = process_large_land(mainlands)
-    print("Processing large islands...")
-    coast_large = process_large_land(large_islands)
-    print("Processing mid islands...")
-    coast_mid = process_mid_islands(mid_islands)
-    print("Processing small islands...")
-    coast_small = process_small_islands(small_islands)
-
-    # combine all
-    print("Combining...")
-    all_geo = pd.concat([coast_main, coast_large, coast_mid, coast_small], ignore_index=True)
-    all_gdf = gpd.GeoDataFrame(geometry=all_geo.geometry, crs=PROJ_CRS)
-    # drop any part smaller than, say, 1 km²
-    all_gdf = all_gdf[all_gdf.area > 1e6]  # in CRS units (m²)
-    # post-simplify & final clean
-    all_gdf.geometry = all_gdf.geometry.simplify(POST_SIMPLIFY_TOL, preserve_topology=True)
-    all_gdf = all_gdf[~all_gdf.geometry.is_empty].reset_index(drop=True)
-    invalid = ~all_gdf.geometry.is_valid
-    if invalid.any():
-        all_gdf.loc[invalid, "geometry"] = all_gdf.loc[invalid].geometry.buffer(0)
-    print(f"Total features before dissolve: {len(all_gdf)}")
-
-    # final dissolve
-    print("Dissolving...")
-    # 1) Dissolve in geographic coords to avoid Mercator clipping
-    merged = unary_union(all_gdf.geometry)
-    merged = gpd.GeoDataFrame(geometry=[merged], crs=PROJ_CRS)
-
-    # 2) Reproject to 6933 to simplify in meters
-    merged.geometry = merged.geometry.simplify(POST_SIMPLIFY_TOL, preserve_topology=True)
-    invalid = ~merged.geometry.is_valid
-    if invalid.any():
-        merged.loc[invalid, "geometry"] = merged.loc[invalid].geometry.buffer(0)
-
-    assert merged.geometry.is_valid.all()
-
-    # 4) Write out
-    merged.to_file(OUTPUT_GPKG, layer=OUTPUT_LAYER, driver="GPKG")
-    print(f"Exported final dissolved strip to {OUTPUT_GPKG}")
+    main()

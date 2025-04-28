@@ -1,32 +1,17 @@
 #!/usr/bin/env python3
 """
-download_mcd12q1.py
+download_modis.py
 
 Download every granule of the MODIS Land Cover product (MCD12Q1 v061)
-using NASA’s earthaccess library.
+using NASA's earthaccess library.
 """
 
 import logging
 import os
-import sys
+from pathlib import Path
 
+import click
 import earthaccess
-
-# -------------------------------------------------------------------
-# CONFIGURATION
-# -------------------------------------------------------------------
-# Local directory where granules will be saved
-OUTPUT_DIR = "/Users/kyledorman/data/MCD12Q1v061"
-
-# EarthAccess search parameters
-SHORT_NAME = "MCD12Q1"  # MODIS Land Cover
-VERSION = "061"  # Collection 6 version 061
-# Temporal range: from first MODIS Land Cover release (2001-01-01)
-# through today.
-TEMPORAL = ("2019-01-01", "2020-01-01")
-
-# How many granules to request per CMR call (max is 20000)
-PAGE_SIZE = 20000
 
 # -------------------------------------------------------------------
 # SET UP LOGGING
@@ -34,36 +19,52 @@ PAGE_SIZE = 20000
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 logger = logging.getLogger(__name__)
 
-os.environ["EARTHDATA_USERNAME"] = "TODO"
-os.environ["EARTHDATA_PASSWORD"] = "TODO"
 
+@click.command()
+@click.option("--output-dir", "-o", required=True, help="Directory to save granules")
+@click.option("--short-name", default="MCD12Q1", show_default=True, help="EarthAccess short name")
+@click.option("--version", default="061", show_default=True, help="EarthAccess collection version")
+@click.option("--start-date", default="2019-01-01", show_default=True, help="Temporal start date (YYYY-MM-DD)")
+@click.option("--end-date", default="2020-01-01", show_default=True, help="Temporal end date (YYYY-MM-DD)")
+@click.option("--page-size", default=20000, show_default=True, type=int, help="Number of granules per CMR request")
+@click.option("--earthdata-username", default=None, help="NASA Earthdata username (optional)")
+@click.option("--earthdata-password", default=None, help="NASA Earthdata password (optional)")
+def main(output_dir, short_name, version, start_date, end_date, page_size, earthdata_username, earthdata_password):
+    # Set Earthdata credentials if provided
+    if earthdata_username:
+        os.environ["EARTHDATA_USERNAME"] = earthdata_username
+    if earthdata_password:
+        os.environ["EARTHDATA_PASSWORD"] = earthdata_password
 
-def main(output_dir: str):
+    # Validate credentials: both username and password must be provided together
+    if bool(earthdata_username) ^ bool(earthdata_password):
+        raise click.UsageError(
+            "You must provide both --earthdata-username and --earthdata-password together, or neither."
+        )
+
     # 1) Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
-    logger.info(f"Saving MCD12Q1v061 granules to: {output_dir}")
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving {short_name}{version} granules to: {output_dir}")
 
-    # 2) Authenticate (will use ~/.netrc or prompt)
+    # 2) Authenticate with NASA Earthdata
     logger.info("Authenticating with NASA Earthdata Login via earthaccess.login()")
-    # Authenticate NASA Earthdata
-    _ = earthaccess.login(strategy="environment", persist=True)
+    _ = earthaccess.login(persist=True)
 
-    # 3) Search for all granules of MCD12Q1 v061
-    logger.info(f"Searching for short_name='{SHORT_NAME}', version='{VERSION}', temporal={TEMPORAL}")
-    granules = earthaccess.search_data(short_name=SHORT_NAME, version=VERSION, temporal=TEMPORAL, count=PAGE_SIZE)
+    # 3) Search for granules
+    temporal = (start_date, end_date)
+    logger.info(f"Searching for short_name='{short_name}', version='{version}', temporal={temporal}")
+    granules = earthaccess.search_data(short_name=short_name, version=version, temporal=temporal, count=page_size)
     ng = len(granules)
-    logger.info(f"Found {ng} granule(s) of {SHORT_NAME} v{VERSION}")
+    logger.info(f"Found {ng} granule(s) of {short_name} v{version}")
 
     if ng == 0:
-        logger.warning("No granules found! Check your short_name/version or temporal range.")
-        sys.exit(1)
+        raise click.ClickException("No granules found! Check your short-name/version or temporal range.")
 
-    # 4) Download all granules
-    #    This will stream each granule to OUTPUT_DIR, showing progress.
+    # 4) Download granules
     logger.info("Beginning download of all granules...")
     earthaccess.download(granules, output_dir)
     logger.info("Download complete! 🎉")
 
 
 if __name__ == "__main__":
-    main(OUTPUT_DIR)
+    main()
