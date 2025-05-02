@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import geopandas as gpd
+import numpy as np
 from omegaconf import OmegaConf
 from shapely.geometry import MultiPoint, Point, Polygon, mapping
 
@@ -124,7 +125,7 @@ def is_within_n_days(target_date: datetime, date_list: Iterable[datetime], n_day
     return any(abs(target_date - dt) <= timedelta(days=n_days) for dt in date_list)
 
 
-def polygon_to_geojson_dict(polygon: Polygon, properties: dict | None = None) -> dict:
+def polygon_to_geojson_dict(polygon: Polygon | Point | MultiPoint, properties: dict | None = None) -> dict:
     """
     Wrap a single Shapely Polygon into a GeoJSON-like dict
     that geopandas.read_file or GeoDataFrame.from_features can consume.
@@ -144,11 +145,40 @@ def polygon_to_geojson_dict(polygon: Polygon, properties: dict | None = None) ->
     }
 
 
-def make_cell_geom(pt_list: list[Point]) -> Point | Polygon:
+def make_cell_geom(pt_list: list[Point]) -> Point | MultiPoint:
     if len(pt_list) == 1:
         # only one point → keep it
         return pt_list[0]
     else:
-        # many points → convex hull around their MultiPoint
-        mp = MultiPoint([p.coords[0] for p in pt_list])
-        return mp.convex_hull  # type: ignore
+        # many points → MultiPoint
+        return MultiPoint([p.coords[0] for p in pt_list])
+
+
+def create_cells_df(points_df: gpd.GeoDataFrame, config: QueryConfig) -> gpd.GeoDataFrame:
+    # convert to new crs
+    gdf = points_df.to_crs("EPSG:4326").copy()
+
+    # Prepare for groupings
+    degree_size = config.degree_size
+    gdf["lon_bin"] = (np.floor(gdf.geometry.x / degree_size) * degree_size).astype(float)
+    gdf["lat_bin"] = (np.floor(gdf.geometry.y / degree_size) * degree_size).astype(float)
+
+    # ----------------------------------------------------------------------------
+    # 1) group by cell and collect both points AND their original indices
+    # ----------------------------------------------------------------------------
+    grouped = (
+        gdf.groupby(["lon_bin", "lat_bin"])
+        .agg(
+            {
+                "geometry": list,  # list of Point geometries
+                "grid_id": list,  # list of grid point ids
+            }
+        )
+        .reset_index()
+    )
+    # replace the list‐of‐points with the single Point (or MultiPoint):
+    grouped["geometry"] = grouped["geometry"].apply(make_cell_geom)  # type: ignore
+    cells = gpd.GeoDataFrame(grouped, geometry="geometry", crs="EPSG:4326")
+    cells["cell_id"] = cells.index
+
+    return cells
