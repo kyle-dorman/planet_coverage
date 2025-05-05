@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -9,19 +9,17 @@ from typing import AsyncIterator
 
 import click
 import geopandas as gpd
-import numpy as np
-import pandas as pd
 import polars as pl
 from dotenv import find_dotenv, load_dotenv
 from planet import DataClient, Session, data_filter
+from shapely import MultiPoint, Point, Polygon
 from shapely.geometry import shape
 from tqdm.asyncio import tqdm_asyncio
 
-from src.config import ItemType, QueryConfig, planet_asset_string
+from src.config import Instrument, ItemType, PublishingStage, QualityCategory, QueryConfig, planet_asset_string
 from src.util import (
     check_and_create_env,
     create_config,
-    make_cell_geom,
     polygon_to_geojson_dict,
     retry_task,
     setup_logger,
@@ -38,12 +36,21 @@ def get_grid_save_path(grid_save_dir: Path, index: int) -> Path:
     return grid_save_path
 
 
-async def create_search_if_missing(sess, cell_geom, index, config, start_date, end_date):
-    grid_save_path = get_grid_save_path(config.save_dir, index)
+async def create_search_if_missing(
+    sess: Session,
+    cell_geom: Point | MultiPoint | Polygon,
+    cell_id: int,
+    config: QueryConfig,
+    start_date: datetime,
+    end_date: datetime,
+):
+    grid_save_path = get_grid_save_path(config.save_dir, cell_id)
     search_request_path = grid_save_path / "search_request.json"
     if not search_request_path.exists():
         search_filter = create_search_filter(start_date, end_date, polygon_to_geojson_dict(cell_geom), config)
-        search_name = f"{config.udm_search_name}_{index}_{start_date.date().isoformat()}_{end_date.date().isoformat()}"
+        search_name = (
+            f"{config.udm_search_name}_{cell_id}_{start_date.date().isoformat()}_{end_date.date().isoformat()}"
+        )
         search_request = await create_search(sess, search_name, search_filter, config)
         with open(search_request_path, "w") as f:
             json.dump(search_request, f)
@@ -106,9 +113,13 @@ def create_search_filter(start_date: datetime, end_date: datetime, grid_geojson:
     ]
 
     # Set publishing level filter
-    if config.item_type == ItemType.PSScene:
-        publishing_filter = data_filter.string_in_filter("publishing_stage", [config.publishing_stage])
+    if config.item_type == ItemType.PSScene and config.publishing_stage is not None:
+        publishing_filter = data_filter.string_in_filter("publishing_stage", [config.publishing_stage.value])
         filters.append(publishing_filter)
+
+    # Set quality filter
+    if config.quality_category is not None and config.quality_category == QualityCategory.Standard:
+        filters.append(data_filter.std_quality_filter())
 
     # combine all of the filters
     all_filters = data_filter.and_filter(filters)
@@ -119,58 +130,75 @@ def create_search_filter(start_date: datetime, end_date: datetime, grid_geojson:
 # Data class for DataFrame rows
 @dataclass
 class DataFrameRow:
-    has_8_channel: bool
     id: str
     acquired: datetime
-    clear_percent: float
-    item_type: str
-    quality_category: str
-    satellite_azimuth: float
+    item_type: str  # ItemType
     satellite_id: str
+    instrument: str  # Instrument
+
+    cell_id: int
+
+    has_8_channel: bool
+    has_sr_asset: bool
+    clear_percent: float
+    quality_category: str  # QualityCategory
+    ground_control: bool
+    publishing_stage: str  # PublishingStage
+
+    satellite_azimuth: float
     sun_azimuth: float
     sun_elevation: float
     view_angle: float
-    instrument: str
-    grid_idx: int
+    geometry_wkb: bytes
 
     @classmethod
     @lru_cache(1)
     def polars_schema(cls) -> dict:
         return {
-            "has_8_channel": pl.Boolean,
             "id": pl.Utf8,
             "acquired": pl.Datetime,
+            "item_type": pl.Enum(ItemType),
+            "satellite_id": pl.Utf8,
+            "instrument": pl.Enum(Instrument),
+            "cell_id": pl.UInt32,
+            "has_8_channel": pl.Boolean,
+            "has_sr_asset": pl.Boolean,
             "clear_percent": pl.Float32,
-            "item_type": pl.Categorical,
-            "quality_category": pl.Categorical,
+            "quality_category": pl.Enum(QualityCategory),
+            "ground_control": pl.Boolean,
+            "publishing_stage": pl.Enum(PublishingStage),
             "satellite_azimuth": pl.Float32,
-            "satellite_id": pl.Categorical,
             "sun_azimuth": pl.Float32,
             "sun_elevation": pl.Float32,
             "view_angle": pl.Float32,
-            "instrument": pl.Categorical,
-            "grid_idx": pl.UInt32,
+            "geometry_wkb": pl.Binary,
         }
 
 
-def dataframe_row(item: dict, index: int) -> DataFrameRow:
+def dataframe_row(item: dict, cell_id: int) -> DataFrameRow:
     props = item["properties"]
-    clear_percent = props.get("clear_percent", 1 - int(props.get("cloud_cover", 0) * 100))
+    clear_percent = props.get("clear_percent", 100 - int(props.get("cloud_cover", 0) * 100))
+    asset_names = ["ortho_analytic_4b_sr", "ortho_analytic_sr"]
+    assets = item.get("assets", {})
 
     return DataFrameRow(
-        has_8_channel="ortho_analytic_8b_sr" in item.get("assets", {}),
         id=item["id"],
         acquired=datetime.fromisoformat(props["acquired"]),
-        clear_percent=clear_percent,
-        item_type=props["item_type"],
-        quality_category=props["quality_category"],
-        satellite_azimuth=props["satellite_azimuth"],
+        item_type=ItemType(props["item_type"]).value,
         satellite_id=props["satellite_id"],
+        instrument=Instrument(props.get("instrument", "SkySat")).value,
+        cell_id=cell_id,
+        has_8_channel="basic_analytic_8b" in assets,
+        has_sr_asset=any(asset_name in assets for asset_name in asset_names),
+        clear_percent=clear_percent,
+        quality_category=QualityCategory(props["quality_category"]).value,
+        ground_control=props.get("ground_control", True),
+        publishing_stage=PublishingStage(props["publishing_stage"]).value,
+        satellite_azimuth=props["satellite_azimuth"],
         sun_azimuth=props["sun_azimuth"],
         sun_elevation=props["sun_elevation"],
         view_angle=props["view_angle"],
-        instrument=props.get("instrument", "SkySat"),
-        grid_idx=index,
+        geometry_wkb=shape(item["geometry"]).wkb,
     )
 
 
@@ -178,20 +206,18 @@ async def process_cell(
     sess: Session,
     config: QueryConfig,
     search_request: dict,
-    cell_df: gpd.GeoDataFrame,
-    index: int,
+    cell_id: int,
 ) -> None:
-    """Download results for 1 cell (N points) and save the results to a parquet file.
+    """Download results for 1 geometry and save the results to a parquet file.
 
     Args:
         sess (Session): The planet Session
         config (QueryConfig): The QueryConfig
         search_request (dict): the created search request
-        cell_df (GeoDataFrame): The dataframe of points belonging to this cell
-        index (int): The cells's index
+        cell_id (int): The cells's index
     """
     try:
-        grid_save_path = get_grid_save_path(config.save_dir, index)
+        grid_save_path = get_grid_save_path(config.save_dir, cell_id)
         results_path = grid_save_path / "data.parquet"
 
         if results_path.exists():
@@ -203,22 +229,9 @@ async def process_cell(
 
         item_list = await retry_task(_collect_lazy, config.download_retries_max, config.download_backoff)
 
-        rows = []
-        if len(item_list):
-            # Build spatial index once outside loop
-            sindex = cell_df.sindex
-
-            for item in item_list:
-                base_row = dataframe_row(item, 0)
-                item_geom = shape(item["geometry"])  # still need once
-
-                possible_matches = sindex.intersection(item_geom.bounds)
-                matching = cell_df.iloc[possible_matches]
-
-                for idx in matching[matching.intersects(item_geom)].index:
-                    rows.append(replace(base_row, grid_idx=idx))
-
-        df = pl.DataFrame(rows, schema=DataFrameRow.polars_schema())  # type: ignore
+        df = pl.DataFrame(
+            [dataframe_row(item=item, cell_id=cell_id) for item in item_list], schema=DataFrameRow.polars_schema()
+        )  # type: ignore
 
         # Save as Parquet using Polars (automatically optimizes types)
         df.write_parquet(
@@ -226,52 +239,36 @@ async def process_cell(
         )
 
     except Exception as e:
-        logger.error(f"Grid {index} failed")
+        logger.error(f"Cell {cell_id} failed")
         logger.exception(e)
 
 
 # Gets a list of all UDMs which match grid points and start/end date range.
 async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, end_date: datetime) -> None:
     # Load dataframe
+    logger.info("Loading grid")
     gdf = gpd.read_file(config.grid_path)
-    assert isinstance(gdf.index, pd.RangeIndex), "Expected a simple RangeIndex"
+    gdf_wgs = gdf.to_crs("EPSG:4326")
+    valid = gdf_wgs.is_valid
+    num_invalid = (~valid).sum()
+    logger.info(f"Loaded grid with {len(gdf_wgs) - num_invalid} valid and {num_invalid} invalid geometries.")
+    gdf_wgs = gdf_wgs[valid]
 
-    # convert to new crs
-    gdf = gdf.to_crs("EPSG:4326")
-
-    # Prepare for groupings
-    degree_size = config.degree_size
-    gdf["lon_bin"] = (np.floor(gdf.geometry.x / degree_size) * degree_size).astype(float)
-    gdf["lat_bin"] = (np.floor(gdf.geometry.y / degree_size) * degree_size).astype(float)
-    gdf["grid_index"] = gdf.index
-
-    # ----------------------------------------------------------------------------
-    # 1) group by cell and collect both points AND their original indices
-    # ----------------------------------------------------------------------------
-    grouped = (
-        gdf.groupby(["lon_bin", "lat_bin"])
-        .agg(
-            {
-                "geometry": list,  # list of Point geometries
-                "grid_index": list,  # list of original indices
-            }
-        )
-        .reset_index()
-    )
-    grouped["cell_geom"] = grouped["geometry"].apply(make_cell_geom)  # type: ignore
-    cells = gpd.GeoDataFrame(grouped, geometry="cell_geom", crs="EPSG:4326")
-    total = len(cells)
+    if config.filter_grid_path is not None:
+        logger.info(f"Filtering grid using {config.filter_grid_path}")
+        filter_geo = gpd.read_file(config.filter_grid_path).to_crs("EPSG:4326").union_all()
+        gdf_wgs = gdf_wgs[gdf_wgs.intersects(filter_geo)]
+        logger.info(f"Filtered grid to {len(gdf_wgs)} polygons")
 
     # Phase A: create searches
     async def create_searches():
         tasks = []
-        for index, row in cells.iterrows():
-            cell = row["cell_geom"]
+        for _, row in gdf_wgs.iterrows():
             task = asyncio.create_task(
                 create_search_if_missing(
                     sess=sess,
-                    cell_geom=cell,
-                    index=index,
+                    cell_geom=row["geometry"],
+                    cell_id=row["cell_id"],
                     config=config,
                     start_date=start_date,
                     end_date=end_date,
@@ -279,7 +276,7 @@ async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, 
             )
             tasks.append(task)
 
-        for task in tqdm_asyncio.as_completed(tasks, total=total, desc="Create Searches", dynamic_ncols=True):
+        for task in tqdm_asyncio.as_completed(tasks, total=len(gdf_wgs), desc="Create Searches", dynamic_ncols=True):
             await task
 
     await create_searches()
@@ -287,13 +284,10 @@ async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, 
     # Phase B: download items
     async def download_items():
         tasks = []
-        for index, row in cells.iterrows():
-            orig_idxs = row["grid_index"]  # the list of points in this cell
-            subset = gdf.take(orig_idxs)  # very fast positional slicing
-            subset = subset.set_geometry("geometry")  # ensure geometry col
+        for _, row in gdf_wgs.iterrows():
+            cell_id = int(row["cell_id"])
 
-            grid_save_path = get_grid_save_path(config.save_dir, index)  # type: ignore
-
+            grid_save_path = get_grid_save_path(config.save_dir, cell_id)  # type: ignore
             with open(grid_save_path / "search_request.json") as f:
                 search_request = json.load(f)
 
@@ -302,13 +296,12 @@ async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, 
                     sess=sess,
                     config=config,
                     search_request=search_request,
-                    cell_df=subset,
-                    index=index,  # type: ignore
+                    cell_id=cell_id,
                 )
             )
             tasks.append(task)
 
-        for task in tqdm_asyncio.as_completed(tasks, total=total, desc="Download Items", dynamic_ncols=True):
+        for task in tqdm_asyncio.as_completed(tasks, total=len(gdf_wgs), desc="Download Items", dynamic_ncols=True):
             await task
 
     await download_items()

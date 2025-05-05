@@ -8,6 +8,24 @@ class ItemType(Enum):
     SkySatCollect = "SkySatCollect"
 
 
+class Instrument(Enum):
+    PS2 = "PS2"
+    PS2_SD = "PS2.SD"
+    PSB_SD = "PSB.SD"
+    SkySat = "SkySat"
+
+
+class PublishingStage(Enum):
+    Preview = "preview"
+    Standard = "standard"
+    Finalized = "finalized"
+
+
+class QualityCategory(Enum):
+    Test = "test"
+    Standard = "standard"
+
+
 class AssetType(Enum):
     ortho_sr = "ortho_sr"
     ortho = "ortho"
@@ -17,8 +35,11 @@ class AssetType(Enum):
 
 @dataclass
 class QueryConfig:
-    # Path the grid geojson file
+    # Path the grid gpfk file
     grid_path: Path = Path("/updateme")
+
+    # Path to a grid geojson file usd to filter the grid_path (for testing)
+    filter_grid_path: Path | None = None
 
     # Path to save the results
     save_dir: Path = Path("/updateme")
@@ -27,13 +48,16 @@ class QueryConfig:
     item_type: ItemType = ItemType.PSScene
 
     # Asset Type
-    asset_type: AssetType = AssetType.ortho_sr
+    asset_type: AssetType = AssetType.basic
 
     # Base name for Planet UDM search requests
     udm_search_name: str = "udm2_coverage_search"
 
     # Stage of imagegry data
-    publishing_stage: str = "finalized"
+    publishing_stage: PublishingStage | None = None
+
+    # Quality Category
+    quality_category: QualityCategory | None = None
 
     # Max number of UDMs to consider
     udm_limit: int = 1000000
@@ -43,9 +67,6 @@ class QueryConfig:
 
     # Seconds to wait before retrying
     download_backoff: float = 1.0
-
-    # Group points to degree size
-    degree_size: float = 1.0
 
 
 def validate_config(config: QueryConfig):

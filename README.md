@@ -64,6 +64,7 @@ conda env create -f environment.yml
 I am not sure if this is required or not. Depends on some package versions.
 ```bash
 conda activate planet_coverage
+conda install -c conda-forge jupyter_contrib_nbextensions
 jupyter nbextension enable --py widgetsnbextension
 ```
 
