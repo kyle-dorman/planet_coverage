@@ -68,9 +68,6 @@ class QueryConfig:
     # Seconds to wait before retrying
     download_backoff: float = 1.0
 
-    # Group points to degree size
-    degree_size: float = 1.0
-
 
 def validate_config(config: QueryConfig):
     """Validate the QueryConfig is compatable with planet api.

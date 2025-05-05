@@ -1,6 +1,7 @@
 import logging
 
 import geopandas as gpd
+import polars as pl
 import shapely
 
 logger = logging.getLogger(__name__)
@@ -71,3 +72,69 @@ def load_coastal(path: str, proj_crs: str) -> gpd.GeoDataFrame:
     assert coastal.crs.to_string() == proj_crs, f"Expected CRS {proj_crs}, got {coastal.crs}"
     assert len(coastal) == 1, "No coastal features found"
     return coastal
+
+
+def dedup_satellite_captures(df: pl.LazyFrame, max_duration_hrs: int, column_name: str) -> pl.DataFrame:
+    """Deduplicate satellite captures for a single grid point / polygon.
+
+    Captures can overlap but we don't want to double count these in small windows of time
+
+    Args:
+        df (pl.LazyFrame): The lazy dataframe
+        max_duration_hrs (int): The max duration between frames before this is considered a different capture instance.
+        column_name (str): The name of the grid column.
+
+    Returns:
+        pl.DataFrame: The fully realized dataframe.
+    """
+    threshold = pl.duration(hours=max_duration_hrs)
+
+    df_best = (
+        df.sort([column_name, "satellite_id", "acquired"])  # still lazy
+        .with_columns(
+            [
+                # 1) time since previous capture
+                pl.col("acquired")
+                .diff()
+                .over([column_name, "satellite_id"])
+                .alias("delta"),
+            ]
+        )
+        .with_columns(
+            [
+                # 2) flag new groups
+                ((pl.col("delta").is_null()) | (pl.col("delta") > threshold))
+                .cast(pl.UInt32)
+                .alias("new_group"),
+            ]
+        )
+        .with_columns(
+            [
+                # 3) cumulative sum _in that window_ → group IDs
+                pl.col("new_group").cum_sum().over([column_name, "satellite_id"]).alias("group_id"),  # <— use cumsum
+                # 4) your ranking columns (unchanged)
+                pl.when(pl.col("quality_category") == "standard").then(1).otherwise(0).alias("quality_rank"),
+                pl.when(pl.col("publishing_stage") == "finalized")
+                .then(3)
+                .when(pl.col("publishing_stage") == "standard")
+                .then(2)
+                .when(pl.col("publishing_stage") == "preview")
+                .then(1)
+                .otherwise(0)
+                .alias("publishing_rank"),
+            ]
+        )
+        # 5) sort best‐first in each group
+        .sort(
+            by=[column_name, "satellite_id", "group_id", "quality_rank", "publishing_rank", "clear_percent"],
+            descending=[False, False, False, True, True, True],
+        )
+        # 6) take the first (best) row per group
+        .group_by([column_name, "satellite_id", "group_id"], maintain_order=True)
+        .head(1)
+        # 7) drop your helper columns
+        .select(pl.exclude(["delta", "new_group", "group_id", "quality_rank", "publishing_rank"]))
+        .collect()  # execute the query
+    )
+
+    return df_best

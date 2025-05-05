@@ -12,7 +12,7 @@ import geopandas as gpd
 import polars as pl
 from dotenv import find_dotenv, load_dotenv
 from planet import DataClient, Session, data_filter
-from shapely import MultiPoint, Point
+from shapely import MultiPoint, Point, Polygon
 from shapely.geometry import shape
 from tqdm.asyncio import tqdm_asyncio
 
@@ -38,7 +38,7 @@ def get_grid_save_path(grid_save_dir: Path, index: int) -> Path:
 
 async def create_search_if_missing(
     sess: Session,
-    cell_geom: Point | MultiPoint,
+    cell_geom: Point | MultiPoint | Polygon,
     cell_id: int,
     config: QueryConfig,
     start_date: datetime,
@@ -249,7 +249,10 @@ async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, 
     logger.info("Loading grid")
     gdf = gpd.read_file(config.grid_path)
     gdf_wgs = gdf.to_crs("EPSG:4326")
-    logger.info(f"Loaded grid with {len(gdf_wgs)} geometries")
+    valid = gdf_wgs.is_valid
+    num_invalid = (~valid).sum()
+    logger.info(f"Loaded grid with {len(gdf_wgs) - num_invalid} valid and {num_invalid} invalid geometries.")
+    gdf_wgs = gdf_wgs[valid]
 
     if config.filter_grid_path is not None:
         logger.info(f"Filtering grid using {config.filter_grid_path}")
