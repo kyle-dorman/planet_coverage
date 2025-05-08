@@ -44,37 +44,30 @@ SCHEMA = {
 }
 
 
-def cell_id_to_glob_pth(base_dir: Path, cell_id: int) -> str:
-    h = f"{cell_id:06x}"
-    return f"{base_dir}/*/{h[:2]}/{h[2:4]}/{h[4:]}/data.parquet"
-
-
 def get_save_path(base: Path, index: int) -> Path:
     hex_id = f"{index:06x}"  # unique 6‑digit hex, e.g. '0f1a2b'
     d1, d2, d3 = hex_id[:2], hex_id[2:4], hex_id[4:6]
     save_path = base / d1 / d2 / d3
-    save_path.mkdir(exist_ok=True, parents=True)
     return save_path
 
 
-def process_file(inpt: tuple[gpd.GeoDataFrame, pl.LazyFrame, Path], min_area_m: float) -> None:
+def process_file(inpt: tuple[gpd.GeoDataFrame, pd.Series, Path], min_area_m: float) -> None:
     """Process one data.parquet file for coastal points."""
     grid_gdf, lazy_df, out_dir = inpt
     assert grid_gdf.crs is not None
     assert grid_gdf.poly_area is not None
+    assert not out_dir.exists()
     dest = out_dir / "coastal_points.parquet"
 
     count_df = lazy_df.select(pl.count().alias("n_rows")).collect()
     n_rows = count_df["n_rows"][0]
     if n_rows == 0:
-        # write empty schema
-        empty = pl.DataFrame(schema=SCHEMA)
-        empty.write_parquet(dest)
         return
 
     # load the parquet into pandas to rebuild geometries
-    df_pd = lazy_df.collect().to_pandas()
+    df_pd: pd.DataFrame = lazy_df.collect().to_pandas()
     df_pd["geometry"] = df_pd["geometry_wkb"].apply(wkb.loads)  # type: ignore
+    df_pd.drop(columns=["geometry_wkb"])
     satellite_gdf = gpd.GeoDataFrame(df_pd, geometry="geometry", crs="EPSG:4326").to_crs(grid_gdf.crs)
 
     # Verify all geometries are valid
@@ -82,14 +75,21 @@ def process_file(inpt: tuple[gpd.GeoDataFrame, pl.LazyFrame, Path], min_area_m: 
 
     # --- find intersection of all grids and downloaded satellite captures
 
-    # intersect image footprints with cell polygons and filter by area overlap
-    joined = gpd.sjoin(grid_gdf[["grid_id", "geometry", "poly_area"]], satellite_gdf)
+    # intersect image footprints with grid polygons
+    joined = gpd.overlay(
+        grid_gdf[["grid_id", "geometry", "poly_area"]],
+        satellite_gdf,
+        how="intersection"
+    )
 
     # remove any duplicate captures per grid_id/id combination
     joined = joined.drop_duplicates(subset=["grid_id", "id"])
 
     # Filter intersections smaller than a certain area
     joined = joined[joined.geometry.area > min_area_m]
+    
+    if joined.empty:
+        return
 
     # Add percent of input geometry that is covered by satellite capture
     joined["coverage_pct"] = joined.geometry.area / joined["poly_area"]
@@ -102,10 +102,12 @@ def process_file(inpt: tuple[gpd.GeoDataFrame, pl.LazyFrame, Path], min_area_m: 
 
     # joined now has all columns from gdf + a `grid_id` and the index of the matched pt
     # Drop the extra index column that sjoin adds and the point geometry column
-    joined = joined.drop(columns=["index_right", "poly_area", "geometry"])
+    joined = joined.drop(columns=["poly_area", "geometry"])
 
     # Convert to Polars (or pandas) to write out
     pl_out = pl.from_pandas(joined, schema_overrides=SCHEMA, include_index=False)
+    
+    out_dir.mkdir(exist_ok=True, parents=True)
     pl_out.write_parquet(dest)
 
 
@@ -159,14 +161,20 @@ def main(
     if not len(files):
         logger.error("No data.parquet files found under %s", base_dir)
         return
+    
+    # define the global scan up front (only once)
+    all_lazy = pl.scan_parquet(
+        f"{base_dir}/{GLOB_PATTERN}",
+        schema=DataFrameRow.polars_schema(),
+    )
+
+    if save_dir.exists():
+        logger.error(f"save_dir {save_dir} exists!")
+        return
 
     logger.info("Loading query grids from %s", query_grids_path)
     gdf_cells = gpd.read_file(query_grids_path)
     assert gdf_cells.crs is not None
-    # add hex identifier to polygons for matching
-    gdf_cells["hex_pth"] = gdf_cells["cell_id"].apply(
-        lambda cell_id: cell_id_to_glob_pth(base_dir=base_dir, cell_id=cell_id)
-    )
 
     logger.info("Loading coastal grids from %s", coastal_grids_path)
     gdf_coastal = gpd.read_file(coastal_grids_path).rename(columns={"cell_id": "grid_id"})
@@ -178,30 +186,29 @@ def main(
     # initial spatial join: match coastal grids to query cells by containment
     joined = gpd.sjoin(
         left_df=gdf_coastal[["grid_id", "geometry"]],
-        right_df=gdf_cells[["hex_pth", "geometry"]],
+        right_df=gdf_cells[["cell_id", "geometry"]],
         how="left",
     )
 
     # separate those with overlap from those without
-    joined_overlap = joined[joined["hex_pth"].notnull()].copy()
-    joined_missing = joined[joined["hex_pth"].isnull()]
+    joined_overlap = joined[joined["cell_id"].notnull()].copy()
+    joined_missing = joined[joined["cell_id"].isnull()]
 
     # for any missing, assign nearest cell
     if not joined_missing.empty:
         logger.info(f"{len(joined_missing)} coastal grids lack overlap; assigning nearest cell")
         nearest = gpd.sjoin_nearest(
             joined_missing[["grid_id", "geometry"]],
-            gdf_cells[["cell_id", "hex_pth", "geometry"]],
+            gdf_cells[["cell_id", "geometry"]],
             how="left",
-            distance_col="dist",
-        ).sort_values(by=["grid_id", "dist"])
+        )
         # combine overlap and nearest
         joined = pd.concat([joined_overlap, nearest], ignore_index=True)
     else:
         joined = joined_overlap
 
     logger.info(
-        f"Found {joined.size} intersections between {gdf_coastal.size} coastal grids and {gdf_cells.size} query grids."
+        f"Found {len(joined)} intersections between {len(gdf_coastal)} coastal grids and {len(gdf_cells)} query grids."
     )
     grid_ids = sorted(joined.grid_id.unique())
 
@@ -211,23 +218,18 @@ def main(
     for idx in idxes:
         stop = idx + chunk_size
         batch_grid_idxes = grid_ids[idx:stop]
-        # determine the hex paths for this batch
-        hex_pths = set(joined[joined.grid_id.isin(batch_grid_idxes)]["hex_pth"].unique().tolist())
-
-        # load each file lazily (one LazyFrame per file)
-        lazy_dfs = []
-        for pth in hex_pths:
-            ldf = pl.scan_parquet(pth, schema=DataFrameRow.polars_schema())
-            lazy_dfs.append(ldf)
-        lazy_df = pl.concat(lazy_dfs)
-
-        # Get grid ids that match
-        coastal_batch = gdf_coastal[gdf_coastal.grid_id.isin(batch_grid_idxes)]
+        # select cell_ids via grid_id lookup
+        cell_ids = joined[joined.grid_id.isin(batch_grid_idxes)].cell_id.unique()
+        lazy_df = all_lazy.filter(
+            pl.col("cell_id").is_in(cell_ids)
+        )
+        # select coastal rows via index lookup, then restore grid_id as column
+        coastal_batch = gdf_coastal[gdf_coastal.grid_id.isin(batch_grid_idxes)].reset_index()
         # create tasks to run
         tasks.append((coastal_batch, lazy_df, get_save_path(save_dir, idx)))
 
-    logger.info("Running tasks in parallel")
     # Run in parallel
+    logger.info("Running tasks in parallel")
     num_workers = max(1, cpu_count() - 1)
     with Pool(num_workers) as pool:
         func = partial(process_file, min_area_m=min_area_m)
