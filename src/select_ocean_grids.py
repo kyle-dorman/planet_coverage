@@ -32,9 +32,9 @@ def load_coastal(path: str, proj_crs: str) -> gpd.GeoDataFrame:
     return coastal
 
 
-def prepare_land(df: gpd.GeoDataFrame, simplify_tol) -> gpd.GeoDataFrame:
+def prepare_land(df: gpd.GeoDataFrame, crs: str, simplify_tol: float) -> gpd.GeoDataFrame:
     assert df.crs is not None
-    df = preprocess_geometry(df, df.crs, simplify_tol)  # type: ignore
+    df = preprocess_geometry(df, crs, simplify_tol)  # type: ignore
     clean_invalid(df)
 
     return df
@@ -49,13 +49,11 @@ def filter_partition(
     Buffer point geometries by buffer_radius and keep those that intersect
     the coastal union or are outside land.
     """
-    assert grid_df.crs == coastal.crs
+    assert grid_df.crs == coastal.crs == land.crs
 
-    assert land.crs is not None
-    wgs = grid_df.to_crs(land.crs)
     land_union = land.union_all()
     prep_land = prep(land_union)
-    land_mask = wgs.geometry.apply(lambda geom: prep_land.intersects(geom))
+    land_mask = grid_df.geometry.apply(lambda geom: prep_land.intersects(geom))
 
     # Check where the polygons intersect the coast
     coastal_union = coastal.union_all("coverage")
@@ -122,6 +120,7 @@ def main(
     dask_grid: dgpd.GeoDataFrame = dgpd.from_geopandas(combined_gdf, npartitions=partitions)
     dask_land = dask_grid.map_partitions(
         prepare_land,
+        crs,
         simplify_tol,
         meta=dask_grid._meta,
     )

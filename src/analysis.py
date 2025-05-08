@@ -2,16 +2,10 @@ from pathlib import Path
 
 import cartopy.io.shapereader as shpreader
 import duckdb
-import folium
 import geopandas as gpd
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-from branca.colormap import linear
-from folium.plugins import MarkerCluster
-from shapely.geometry import box
-from tqdm import tqdm
 
 from src.util import create_config, make_cell_geom
 
@@ -52,10 +46,9 @@ ca_shape = ca_wgs.union_all(method="coverage")
 mask_ca = gdf.geometry.intersects(ca_shape)
 gdf = gdf[mask_ca].copy()
 
-degree_size = config.degree_size
-gdf["lon_bin"] = (np.floor(gdf.geometry.x / degree_size) * degree_size).astype(float)
-gdf["lat_bin"] = (np.floor(gdf.geometry.y / degree_size) * degree_size).astype(float)
-gdf["grid_index"] = gdf.index
+# gdf["lon_bin"] = (np.floor(gdf.geometry.x / degree_size) * degree_size).astype(float)
+# gdf["lat_bin"] = (np.floor(gdf.geometry.y / degree_size) * degree_size).astype(float)
+# gdf["grid_index"] = gdf.index
 
 # ----------------------------------------------------------------------------
 # 1) group by cell and collect both points AND their original indices
