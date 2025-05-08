@@ -60,18 +60,40 @@ class TideModel:
         # invert tidal constituent mask
         self.mz = np.invert(hc.mask)
 
-    def tide_elevations(self, latlon: np.ndarray, times: list[datetime], samples: int = 10) -> np.ndarray:
-        """_summary_
+    def tide_elevations(self, latlon: np.ndarray, times: list[list[datetime]], samples: int = 10) -> list[np.ndarray]:
+        """Computes tidal elevations for N latlon pairs and N, m times. Where m is variable.
 
         Args:
             latlon (np.ndarray): Target latitude, longitude as list (N, 2)
-            times (list[datetime]): List of datetimes to process (N)
+            times (listlist[[datetime]]): List of datetimes to process (M, m)
             samples (int, optional): Number of intorpolation samples. Defaults to 10.
 
         Returns:
             np.ndarray: The tidal height for each latlon/time in meters.
         """
+        yxs = self.find_best_coordinates(latlon, samples)
+
+        outs = []
+        # Compute tidal elevations per coordinate
+        for (y, x), tlist in zip(yxs, times):
+            # compute elevations
+            elev = tide_elevations(
+                x,
+                y,
+                delta_time=tlist,  # type: ignore
+                DIRECTORY=self.model_directory,
+                MODEL=self.model_name,
+                TYPE="time series",
+                TIME="datetime",
+            )[0]
+            assert not elev.mask.any()
+            outs.append(elev.data)
+        return outs
+
+    def find_best_coordinates(self, latlon: np.ndarray, samples: int = 10) -> np.ndarray:
         latlon = latlon.astype(np.float64)
+        if len(latlon.shape) == 1:
+            latlon = latlon[None]
         lt1 = np.nonzero(latlon[:, 1] < 0)
         latlon[:, 1][lt1] += 360.0
 
@@ -80,22 +102,22 @@ class TideModel:
         S, N, _ = yxs.shape
         ys = yxs[:, :, 0].flatten()
         xs = yxs[:, :, 1].flatten()
-        deltas = datetimes_to_delta(times)
-        deltas_samples = np.repeat(deltas[np.newaxis, :], samples, axis=0)
-        flat_deltas_samples = deltas_samples.flatten()
 
+        flat_deltas_samples = datetimes_to_delta([datetime.now()] * len(ys))
         flat_elevations = tide_elevations(
             xs, ys, delta_time=flat_deltas_samples, DIRECTORY=self.model_directory, MODEL=self.model_name
         )
-
         elevations = flat_elevations.reshape((S, N))
 
-        out_elevations = []
+        best_idxes = []
         for n in range(N):
             si = np.where(~elevations.mask[:, n])[0][0]
-            out_elevations.append(elevations.data[si, n])
+            best_idxes.append(si)
 
-        return np.array(out_elevations)
+        # Select the best coordinate for each target
+        yxs_best = yxs[best_idxes, np.arange(len(best_idxes))]
+
+        return yxs_best
 
 
 def tide_model(model_directory: Path | None, model_name: str, model_format: str) -> TideModel | None:
@@ -109,3 +131,51 @@ def tide_model(model_directory: Path | None, model_name: str, model_format: str)
     model = pyTMD.io.model(model_directory, format=model_format).elevation(model_name)
 
     return TideModel(model, model_directory, model_name)
+
+
+if __name__ == "__main__":
+    import geopandas as gpd
+    from pyproj import Transformer
+    from shapely.ops import transform
+
+    BASE = Path("/Users/kyledorman/data/planet_coverage/ca_only_testing")  # <-- update this
+    GRID_ID = 31565
+
+    ca_ocean = gpd.read_file(BASE / "ca_ocean.geojson")
+    all_grids_df = gpd.read_file(BASE / "ocean_grids.gpkg").to_crs(ca_ocean.crs)  # type: ignore
+
+    grid_df = all_grids_df[all_grids_df.cell_id == GRID_ID]
+
+    # define start and end as numpy datetime64 objects
+    start = np.datetime64("2023-12-01T00:00")
+    end = np.datetime64("2024-12-01T00:00")
+    minutes = np.arange(start, end, np.timedelta64(1, "m"))
+
+    tm = tide_model(Path("/Users/kyledorman/data/tides"), "GOT4.10", "GOT")
+    assert tm is not None
+
+    all_tides = []
+
+    local_crs = grid_df.estimate_utm_crs()
+    grid_point_local = grid_df.to_crs(local_crs).geometry.iloc[0].centroid  # type: ignore
+    transformer = Transformer.from_crs(local_crs, grid_df.crs, always_xy=True)
+
+    # 2. Write a small wrapper that matches the shapely.ops.transform signature
+    def project(x, y, z=None):
+        # pyproj returns (x2, y2) or (x2, y2, z2) depending on input
+        if z is None:
+            x2, y2 = transformer.transform(x, y)
+            return x2, y2
+        else:
+            x2, y2, z2 = transformer.transform(x, y, z)
+            return x2, y2, z2
+
+    # 4. Apply the projection
+    grid_point = transform(project, grid_point_local)
+    latlons = np.array([grid_point.y, grid_point.x])
+
+    # generate every minute between start (inclusive) and end (exclusive)
+    minutes = np.arange(start, end, np.timedelta64(1, "m"))
+    tides_year = tm.tide_elevations(latlons, times=[minutes])[0]  # type: ignore
+
+    np.save("extracted/tides_2023.npy", tides_year)

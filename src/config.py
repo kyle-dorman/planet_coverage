@@ -62,6 +62,9 @@ class QueryConfig:
     # Max number of UDMs to consider
     udm_limit: int = 1000000
 
+    # Max tasks in flight at a time
+    max_concurrent_tasks: int = 1000
+
     # Number of times to retry downloading imagegry data
     download_retries_max: int = 3
 

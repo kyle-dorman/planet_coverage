@@ -260,51 +260,49 @@ async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, 
         gdf_wgs = gdf_wgs[gdf_wgs.intersects(filter_geo)]
         logger.info(f"Filtered grid to {len(gdf_wgs)} polygons")
 
-    # Phase A: create searches
-    async def create_searches():
-        tasks = []
-        for _, row in gdf_wgs.iterrows():
-            task = asyncio.create_task(
-                create_search_if_missing(
+    # Phase A: create all searches with limited concurrency and one progress bar
+    sem = asyncio.Semaphore(config.max_concurrent_tasks)
+
+    async def create_all_searches():
+        async def worker(row):
+            async with sem:
+                await create_search_if_missing(
                     sess=sess,
                     cell_geom=row["geometry"],
-                    cell_id=row["cell_id"],
+                    cell_id=int(row["cell_id"]),
                     config=config,
                     start_date=start_date,
                     end_date=end_date,
                 )
-            )
-            tasks.append(task)
 
-        for task in tqdm_asyncio.as_completed(tasks, total=len(gdf_wgs), desc="Create Searches", dynamic_ncols=True):
+        tasks = [asyncio.create_task(worker(row)) for _, row in gdf_wgs.iterrows()]
+        for task in tqdm_asyncio.as_completed(tasks, total=len(tasks), desc="Create Searches", dynamic_ncols=True):
             await task
 
-    await create_searches()
+    await create_all_searches()
 
-    # Phase B: download items
-    async def download_items():
-        tasks = []
-        for _, row in gdf_wgs.iterrows():
+    # Phase B: download items with limited concurrency and one progress bar
+    sem2 = asyncio.Semaphore(config.max_concurrent_tasks)
+
+    async def download_all_items():
+        async def worker(row):
             cell_id = int(row["cell_id"])
-
-            grid_save_path = get_grid_save_path(config.save_dir, cell_id)  # type: ignore
+            grid_save_path = get_grid_save_path(config.save_dir, cell_id)
             with open(grid_save_path / "search_request.json") as f:
                 search_request = json.load(f)
-
-            task = asyncio.create_task(
-                process_cell(
+            async with sem2:
+                await process_cell(
                     sess=sess,
                     config=config,
                     search_request=search_request,
                     cell_id=cell_id,
                 )
-            )
-            tasks.append(task)
 
-        for task in tqdm_asyncio.as_completed(tasks, total=len(gdf_wgs), desc="Download Items", dynamic_ncols=True):
+        tasks = [asyncio.create_task(worker(row)) for _, row in gdf_wgs.iterrows()]
+        for task in tqdm_asyncio.as_completed(tasks, total=len(tasks), desc="Download Items", dynamic_ncols=True):
             await task
 
-    await download_items()
+    await download_all_items()
 
 
 # Main loop. Query all overlapping UDMs for a given date and set of grid points.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate a regular Sinusoidal grid of points and polygons, retain only those
+Generate a regular Sinusoidal grid of polygons, retain only those
 that intersect coastal strips.
 """
 
@@ -71,7 +71,7 @@ def main(
     # Load and prepare data
     coastal = load_coastal(coastal_path, sinus_crs)
     cell_size_m = compute_step(degrees)
-    points_grid, box_grid = make_equal_area_grid(cell_size_m, sinus_crs)
+    _, box_grid = make_equal_area_grid(cell_size_m, sinus_crs)
 
     # Convert to Dask GeoDataFrame
     logger.info("Converting grid to Dask GeoDataFrame with %d partitions", partitions)
@@ -86,11 +86,10 @@ def main(
     )
     logger.info("Computing filtered points")
     result = filtered.compute()
-    points_result = points_grid.loc[result.index]
-    logger.info("Filtered point count: %d", len(points_result))
+    logger.info("Filtered point count: %d", len(result))
 
     # Save output
-    save_points(points_result, output_path)
+    save_points(result, output_path)
 
 
 if __name__ == "__main__":

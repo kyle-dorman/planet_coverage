@@ -3,6 +3,8 @@ import logging
 import geopandas as gpd
 import polars as pl
 import shapely
+from pyproj import CRS
+from shapely import wkb
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +76,26 @@ def load_coastal(path: str, proj_crs: str) -> gpd.GeoDataFrame:
     return coastal
 
 
-def dedup_satellite_captures(df: pl.LazyFrame, max_duration_hrs: int, column_name: str) -> pl.DataFrame:
+def filter_satellite_pct_intersection(
+    lazy_df: pl.LazyFrame,
+    polygon: shapely.Polygon,
+    crs: CRS,
+    overlap_pct: float,
+) -> pl.DataFrame:
+    # materialize, decode and filter with pandas, then convert back to lazy Polars
+    df_pd = lazy_df.collect().to_pandas()
+    df_pd["geometry"] = df_pd["geometry_wkb"].apply(wkb.loads)  # type: ignore
+    gdf = gpd.GeoDataFrame(df_pd, geometry="geometry", crs="EPSG:4326").to_crs(crs)
+    pct_intersection = gdf.intersection(polygon).area / gdf.geometry.area
+    df_pd = df_pd[pct_intersection > overlap_pct]
+    return pl.from_pandas(df_pd.drop(columns=["geometry"]))
+
+
+def dedup_satellite_captures(
+    lazy_df: pl.LazyFrame,
+    max_duration_hrs: int,
+    column_name: str,
+) -> pl.DataFrame:
     """Deduplicate satellite captures for a single grid point / polygon.
 
     Captures can overlap but we don't want to double count these in small windows of time
@@ -90,7 +111,7 @@ def dedup_satellite_captures(df: pl.LazyFrame, max_duration_hrs: int, column_nam
     threshold = pl.duration(hours=max_duration_hrs)
 
     df_best = (
-        df.sort([column_name, "satellite_id", "acquired"])  # still lazy
+        lazy_df.sort([column_name, "satellite_id", "acquired"])  # still lazy
         .with_columns(
             [
                 # 1) time since previous capture

@@ -2,16 +2,16 @@
 
 set -e
 
-# Loop over dove and skysat
-for SAT in {"skysat","dove"}
+# Loop from 2024 down to 2013
+for YEAR in {2024..2013}
 do
-
-    BASE="/Users/kyledorman/data/planet_coverage/points_30km/${SAT}"
-    YAML_FILE="${BASE}/config.yaml"
-
-    # Loop from 2024 down to 2013
-    for YEAR in {2024..2013}
+    # Loop over dove and skysat
+    for SAT in {"dove","skysat"}
     do
+        BASE="/Users/kyledorman/data/planet_coverage/points_30km/${SAT}"
+        YAML_FILE="${BASE}/config.yaml"
+
+    
         echo "Processing satellite ${SAT} and year ${YEAR}"
 
         # Update the save_dir line inside the YAML file
