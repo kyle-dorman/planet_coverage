@@ -47,17 +47,20 @@ async def create_search_if_missing(
     grid_save_path = get_grid_save_path(config.save_dir, cell_id)
     search_request_path = grid_save_path / "search_request.json"
     if not search_request_path.exists():
-        search_filter = create_search_filter(start_date, end_date, polygon_to_geojson_dict(cell_geom), config)
+        grid_geojson = polygon_to_geojson_dict(cell_geom)
+        search_filter = create_search_filter(start_date, end_date, grid_geojson, config)
         search_name = (
             f"{config.udm_search_name}_{cell_id}_{start_date.date().isoformat()}_{end_date.date().isoformat()}"
         )
-        search_request = await create_search(sess, search_name, search_filter, config)
+        search_request = await create_search(sess, search_name, search_filter, grid_geojson, config)
         with open(search_request_path, "w") as f:
             json.dump(search_request, f)
 
 
 # Asynchronously creates a search request with the given search filter. Returns the created search request.
-async def create_search(sess: Session, search_name: str, search_filter: dict, config: QueryConfig) -> dict:
+async def create_search(
+    sess: Session, search_name: str, search_filter: dict, grid_geojson: dict, config: QueryConfig
+) -> dict:
     logger.debug(f"Creating search request {search_name}")
 
     async def create_search_inner():
@@ -65,6 +68,7 @@ async def create_search(sess: Session, search_name: str, search_filter: dict, co
             name=search_name,
             search_filter=search_filter,
             item_types=[config.item_type.value],
+            geometry=grid_geojson,
         )
 
     search_request = await retry_task(create_search_inner, config.download_retries_max, config.download_backoff)

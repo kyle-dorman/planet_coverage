@@ -14,8 +14,6 @@ from tqdm import tqdm
 from src.config import Instrument, ItemType, PublishingStage, QualityCategory
 from src.query_udms import DataFrameRow
 
-# configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger(__name__)
 
 # build the glob pattern once
@@ -76,18 +74,14 @@ def process_file(inpt: tuple[gpd.GeoDataFrame, pd.Series, Path], min_area_m: flo
     # --- find intersection of all grids and downloaded satellite captures
 
     # intersect image footprints with grid polygons
-    joined = gpd.overlay(
-        grid_gdf[["grid_id", "geometry", "poly_area"]],
-        satellite_gdf,
-        how="intersection"
-    )
+    joined = gpd.overlay(grid_gdf[["grid_id", "geometry", "poly_area"]], satellite_gdf, how="intersection")
 
     # remove any duplicate captures per grid_id/id combination
     joined = joined.drop_duplicates(subset=["grid_id", "id"])
 
     # Filter intersections smaller than a certain area
     joined = joined[joined.geometry.area > min_area_m]
-    
+
     if joined.empty:
         return
 
@@ -106,7 +100,7 @@ def process_file(inpt: tuple[gpd.GeoDataFrame, pd.Series, Path], min_area_m: flo
 
     # Convert to Polars (or pandas) to write out
     pl_out = pl.from_pandas(joined, schema_overrides=SCHEMA, include_index=False)
-    
+
     out_dir.mkdir(exist_ok=True, parents=True)
     pl_out.write_parquet(dest)
 
@@ -155,13 +149,23 @@ def main(
     chunk_size: int,
 ):
     """
-    UPDATE ME
+    Match coastal grid polygons to PlanetScope image footprints,
+    compute their intersections, and save matched image metadata
+    per coastal chunk.
+
+    This script loads coastal grid cells and PlanetScope query cells,
+    assigns each coastal cell to a valid query cell (via overlap or nearest neighbor),
+    filters image data by those cells, intersects them with the coastal grids,
+    filters for minimum area coverage, and saves all matched points
+    (including geometry and metadata) to partitioned Parquet files.
+
+    Run in parallel, grouped by batches of grid_ids.
     """
     files = list(base_dir.glob(GLOB_PATTERN))
     if not len(files):
         logger.error("No data.parquet files found under %s", base_dir)
         return
-    
+
     # define the global scan up front (only once)
     all_lazy = pl.scan_parquet(
         f"{base_dir}/{GLOB_PATTERN}",
@@ -207,8 +211,16 @@ def main(
     else:
         joined = joined_overlap
 
+    # filter to just cell_ids with data
+    valid_cell_ids = all_lazy.select(pl.col("cell_id").unique().sort()).collect().to_series().to_list()
+    joined = joined[joined.cell_id.isin(valid_cell_ids)]
+
     logger.info(
-        f"Found {len(joined)} intersections between {len(gdf_coastal)} coastal grids and {len(gdf_cells)} query grids."
+        f"""
+        Found {len(joined)} intersections between
+        {len(gdf_coastal)} coastal grids,
+        {len(gdf_cells)} total query grids and
+        {len(valid_cell_ids)} valid query grids."""
     )
     grid_ids = sorted(joined.grid_id.unique())
 
@@ -220,9 +232,7 @@ def main(
         batch_grid_idxes = grid_ids[idx:stop]
         # select cell_ids via grid_id lookup
         cell_ids = joined[joined.grid_id.isin(batch_grid_idxes)].cell_id.unique()
-        lazy_df = all_lazy.filter(
-            pl.col("cell_id").is_in(cell_ids)
-        )
+        lazy_df = all_lazy.filter(pl.col("cell_id").is_in(cell_ids))
         # select coastal rows via index lookup, then restore grid_id as column
         coastal_batch = gdf_coastal[gdf_coastal.grid_id.isin(batch_grid_idxes)].reset_index()
         # create tasks to run
@@ -238,4 +248,7 @@ def main(
 
 
 if __name__ == "__main__":
+    # configure logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s")
+
     main()
