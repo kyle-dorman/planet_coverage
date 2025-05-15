@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,7 +11,6 @@ import geopandas as gpd
 import polars as pl
 from dotenv import find_dotenv, load_dotenv
 from planet import DataClient, Session, data_filter
-from shapely import MultiPoint, Point, Polygon
 from shapely.geometry import shape
 from tqdm.asyncio import tqdm_asyncio
 
@@ -36,56 +34,21 @@ def get_grid_save_path(grid_save_dir: Path, index: int) -> Path:
     return grid_save_path
 
 
-async def create_search_if_missing(
-    sess: Session,
-    cell_geom: Point | MultiPoint | Polygon,
-    cell_id: int,
-    config: QueryConfig,
-    start_date: datetime,
-    end_date: datetime,
-):
-    grid_save_path = get_grid_save_path(config.save_dir, cell_id)
-    search_request_path = grid_save_path / "search_request.json"
-    if not search_request_path.exists():
-        grid_geojson = polygon_to_geojson_dict(cell_geom)
-        search_filter = create_search_filter(start_date, end_date, grid_geojson, config)
-        search_name = (
-            f"{config.udm_search_name}_{cell_id}_{start_date.date().isoformat()}_{end_date.date().isoformat()}"
-        )
-        search_request = await create_search(sess, search_name, search_filter, grid_geojson, config)
-        with open(search_request_path, "w") as f:
-            json.dump(search_request, f)
-
-
-# Asynchronously creates a search request with the given search filter. Returns the created search request.
-async def create_search(
-    sess: Session, search_name: str, search_filter: dict, grid_geojson: dict, config: QueryConfig
-) -> dict:
-    logger.debug(f"Creating search request {search_name}")
-
-    async def create_search_inner():
-        return await DataClient(sess).create_search(
-            name=search_name,
-            search_filter=search_filter,
-            item_types=[config.item_type.value],
-            geometry=grid_geojson,
-        )
-
-    search_request = await retry_task(create_search_inner, config.download_retries_max, config.download_backoff)
-
-    logger.debug(f"Created search request {search_name} {search_request['id']}")
-
-    return search_request
-
-
-# Asynchronously performs a search using the given search request.
+# Asynchronously performs a search with the given search filter.
 # Returns a list of items found by the search.
-def do_search(sess: Session, search_request: dict, config: QueryConfig) -> AsyncIterator[dict]:
-    logger.debug(f"Search for udm2 matches {search_request['id']}")
+def do_search(
+    sess: Session, cell_id: int, search_filter: dict, grid_geojson: dict, config: QueryConfig
+) -> AsyncIterator[dict]:
+    logger.debug(f"Search for udm2 matches for cell_id {cell_id}")
 
-    items = DataClient(sess).run_search(search_id=search_request["id"], limit=config.udm_limit)
+    items = DataClient(sess).search(
+        item_types=[config.item_type.value],
+        search_filter=search_filter,
+        geometry=grid_geojson,
+        limit=config.udm_limit,
+    )
 
-    logger.debug(f"Executed udm2 search {search_request['id']}")
+    logger.debug(f"Executed udm2 search for cell_id {cell_id}")
 
     return items
 
@@ -102,9 +65,6 @@ def create_search_filter(start_date: datetime, end_date: datetime, grid_geojson:
     asset_type = planet_asset_string(config)
     asset_filter = data_filter.asset_filter([asset_type])
 
-    # Only get data we can access
-    permission_filter = data_filter.permission_filter()
-
     # Set item type
     item_filter = data_filter.string_in_filter("item_type", [config.item_type.value])
 
@@ -112,7 +72,6 @@ def create_search_filter(start_date: datetime, end_date: datetime, grid_geojson:
         geom_filter,
         date_range_filter,
         asset_filter,
-        permission_filter,
         item_filter,
     ]
 
@@ -209,7 +168,8 @@ def dataframe_row(item: dict, cell_id: int) -> DataFrameRow:
 async def process_cell(
     sess: Session,
     config: QueryConfig,
-    search_request: dict,
+    search_filter: dict,
+    grid_geojson: dict,
     cell_id: int,
 ) -> None:
     """Download results for 1 geometry and save the results to a parquet file.
@@ -217,21 +177,34 @@ async def process_cell(
     Args:
         sess (Session): The planet Session
         config (QueryConfig): The QueryConfig
-        search_request (dict): the created search request
+        search_filter (dict): the filter for the search request
+        grid_geojson (dict): the geometry as a geojson
         cell_id (int): The cells's index
     """
     try:
         grid_save_path = get_grid_save_path(config.save_dir, cell_id)
         results_path = grid_save_path / "data.parquet"
 
-        if results_path.exists():
+        marker_path = grid_save_path / ".ran"  # sentinel file
+
+        # skip if we've already produced a results file *or* the sentinel
+        if results_path.exists() or marker_path.exists():
             return
 
         async def _collect_lazy():
-            lazy = do_search(sess, search_request, config)
+            lazy = do_search(
+                sess=sess, cell_id=cell_id, config=config, grid_geojson=grid_geojson, search_filter=search_filter
+            )
             return [i async for i in lazy]
 
         item_list = await retry_task(_collect_lazy, config.download_retries_max, config.download_backoff)
+
+        # If no items were returned, create an empty sentinel file instead of
+        # writing an empty Parquet. The presence of '.ran' marks this cell as
+        # processed.
+        if not item_list:
+            marker_path.touch()
+            return
 
         df = pl.DataFrame(
             [dataframe_row(item=item, cell_id=cell_id) for item in item_list], schema=DataFrameRow.polars_schema()
@@ -264,41 +237,21 @@ async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, 
         gdf_wgs = gdf_wgs[gdf_wgs.intersects(filter_geo)]
         logger.info(f"Filtered grid to {len(gdf_wgs)} polygons")
 
-    # Phase A: create all searches with limited concurrency and one progress bar
+    # download items with limited concurrency and one progress bar
     sem = asyncio.Semaphore(config.max_concurrent_tasks)
-
-    async def create_all_searches():
-        async def worker(row):
-            async with sem:
-                await create_search_if_missing(
-                    sess=sess,
-                    cell_geom=row["geometry"],
-                    cell_id=int(row["cell_id"]),
-                    config=config,
-                    start_date=start_date,
-                    end_date=end_date,
-                )
-
-        tasks = [asyncio.create_task(worker(row)) for _, row in gdf_wgs.iterrows()]
-        for task in tqdm_asyncio.as_completed(tasks, total=len(tasks), desc="Create Searches", dynamic_ncols=True):
-            await task
-
-    await create_all_searches()
-
-    # Phase B: download items with limited concurrency and one progress bar
-    sem2 = asyncio.Semaphore(config.max_concurrent_tasks)
 
     async def download_all_items():
         async def worker(row):
-            cell_id = int(row["cell_id"])
-            grid_save_path = get_grid_save_path(config.save_dir, cell_id)
-            with open(grid_save_path / "search_request.json") as f:
-                search_request = json.load(f)
-            async with sem2:
+            cell_id = int(row.cell_id)
+            grid_geojson = polygon_to_geojson_dict(row.geometry)
+            search_filter = create_search_filter(start_date, end_date, grid_geojson, config)
+
+            async with sem:
                 await process_cell(
                     sess=sess,
                     config=config,
-                    search_request=search_request,
+                    search_filter=search_filter,
+                    grid_geojson=grid_geojson,
                     cell_id=cell_id,
                 )
 

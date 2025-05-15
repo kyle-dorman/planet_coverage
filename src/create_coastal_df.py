@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import logging
-from functools import partial
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
@@ -49,13 +48,18 @@ def get_save_path(base: Path, index: int) -> Path:
     return save_path
 
 
-def process_file(inpt: tuple[gpd.GeoDataFrame, pd.Series, Path], min_area_m: float) -> None:
+# helper so we can use imap_unordered and keep tqdm progress
+def _star_compute(args):
+    return process_file(*args)
+
+
+def process_file(grid_gdf: gpd.GeoDataFrame, lazy_df: pl.LazyFrame, out_dir: Path, min_area_m: float) -> None:
     """Process one data.parquet file for coastal points."""
-    grid_gdf, lazy_df, out_dir = inpt
     assert grid_gdf.crs is not None
     assert grid_gdf.poly_area is not None
-    assert not out_dir.exists()
     dest = out_dir / "coastal_points.parquet"
+    if dest.exists():
+        return
 
     count_df = lazy_df.select(pl.count().alias("n_rows")).collect()
     n_rows = count_df["n_rows"][0]
@@ -65,7 +69,7 @@ def process_file(inpt: tuple[gpd.GeoDataFrame, pd.Series, Path], min_area_m: flo
     # load the parquet into pandas to rebuild geometries
     df_pd: pd.DataFrame = lazy_df.collect().to_pandas()
     df_pd["geometry"] = df_pd["geometry_wkb"].apply(wkb.loads)  # type: ignore
-    df_pd.drop(columns=["geometry_wkb"])
+    df_pd = df_pd.drop(columns=["geometry_wkb"])
     satellite_gdf = gpd.GeoDataFrame(df_pd, geometry="geometry", crs="EPSG:4326").to_crs(grid_gdf.crs)
 
     # Verify all geometries are valid
@@ -236,14 +240,13 @@ def main(
         # select coastal rows via index lookup, then restore grid_id as column
         coastal_batch = gdf_coastal[gdf_coastal.grid_id.isin(batch_grid_idxes)].reset_index()
         # create tasks to run
-        tasks.append((coastal_batch, lazy_df, get_save_path(save_dir, idx)))
+        tasks.append((coastal_batch, lazy_df, get_save_path(save_dir, idx), min_area_m))
 
     # Run in parallel
     logger.info("Running tasks in parallel")
     num_workers = max(1, cpu_count() - 1)
     with Pool(num_workers) as pool:
-        func = partial(process_file, min_area_m=min_area_m)
-        for _ in tqdm(pool.imap_unordered(func, tasks), total=len(tasks), desc="Processing tasks"):
+        for _ in tqdm(pool.imap_unordered(_star_compute, tasks), total=len(tasks), desc="Processing tasks"):
             pass
 
 

@@ -59,8 +59,8 @@ class QueryConfig:
     # Quality Category
     quality_category: QualityCategory | None = None
 
-    # Max number of UDMs to consider
-    udm_limit: int = 1000000
+    # Max number of UDMs to consider. When set to 0, no maximum is applied.
+    udm_limit: int = 0
 
     # Max tasks in flight at a time
     max_concurrent_tasks: int = 1000

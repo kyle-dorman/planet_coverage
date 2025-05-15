@@ -2,11 +2,11 @@
 
 set -e
 
-# Loop from 2024 down to 2013
-for YEAR in {2024..2013}
+# Loop from 2013 to 2024
+for YEAR in {2013..2024}
 do
     # Loop over dove and skysat
-    for SAT in {"dove","skysat"}
+    for SAT in {"skysat","dove"}
     do
         BASE="/Users/kyledorman/data/planet_coverage/points_30km/${SAT}"
         YAML_FILE="${BASE}/config.yaml"
@@ -23,5 +23,6 @@ do
 
         # Run the Python script
         python src/query_udms.py -c "$YAML_FILE" -s "$START_DATE" -e "$END_DATE"
+        
     done
 done

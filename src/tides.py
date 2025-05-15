@@ -11,6 +11,16 @@ from timescale.time import convert_datetime
 logger = logging.getLogger(__name__)
 
 
+def clean_latlon(latlon: np.ndarray) -> np.ndarray:
+    latlon = latlon.astype(np.float64)
+    if len(latlon.shape) == 1:
+        latlon = latlon[None]
+    lt1 = np.nonzero(latlon[:, 1] < 0)
+    latlon[:, 1][lt1] += 360.0
+
+    return latlon
+
+
 def find_nearest_coordinate(latlon: np.ndarray, mask: np.ndarray, yi: np.ndarray, xi: np.ndarray) -> np.ndarray:
     """
     Find the closest coordinate from a mask of valid coordinates.
@@ -91,12 +101,7 @@ class TideModel:
         return outs
 
     def find_best_coordinates(self, latlon: np.ndarray, samples: int = 10) -> np.ndarray:
-        latlon = latlon.astype(np.float64)
-        if len(latlon.shape) == 1:
-            latlon = latlon[None]
-        lt1 = np.nonzero(latlon[:, 1] < 0)
-        latlon[:, 1][lt1] += 360.0
-
+        latlon = clean_latlon(latlon)
         latlon_close = find_nearest_coordinate(latlon, self.mz, self.yi, self.xi)
         yxs = np.linspace(latlon, 2 * latlon_close - latlon, samples)
         S, N, _ = yxs.shape

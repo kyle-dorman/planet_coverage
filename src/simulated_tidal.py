@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 # Given a single grid cell id and its centroid geometry, simulate one full
 # year of 1‑minute tide elevations; bin heights, compute satellite offsets,
 # subsample by satellite‑specific stride, and return summary statistics
-# (median / 95th‑percentile days‑between passes, counts).
+# (median / 95th‑percentile days‑between passes, counts),
+# and a second dict of per‑cell tidal heuristics (min/max/mean/std, etc.).
 #
 # The function relies on globals (minutes, NBINS, SENTINEL_TIME, …) that are
 # initialised in `main()` so it can be pickled/executed inside a Pool worker.
@@ -41,7 +42,8 @@ def compute_tide_info(
     planet_time: pd.Timedelta,
     sentinel_stride: int,
     landsat_stride: int,
-) -> Dict[str, Any] | None:
+    mid_delta: float,
+) -> tuple[Dict[str, Any], Dict[str, Any]] | None:
     ts_range = end_ts - start_ts
     minutes = np.arange(start_ts, end_ts, np.timedelta64(1, "m")).astype("datetime64[ns]")
     tm = tide_model(Path(tide_data_dir), "GOT4.10", "GOT")
@@ -100,23 +102,33 @@ def compute_tide_info(
 
     # === group by calendar date and pick the closest-overpass per sensor ===
     tides_df["solar_date"] = tides_df["solar_time"].dt.date
+    MINUTES_IN_DAY = 24 * 60 - 1  # less 1 bc rounding
+    tides_df = tides_df.groupby("solar_date", group_keys=False).filter(  # keep the original order
+        lambda grp: len(grp) >= MINUTES_IN_DAY
+    )  # keep only days with ≥ N samples
 
     groups = [
         ("planet", "planet_offset", 1),
         ("sentinel", "sentinel_offset", sentinel_stride),
         ("landsat", "landsat_offset", landsat_stride),
     ]
+    search_ranges = [
+        (0, "low"),
+        (nbins - 1, "high"),
+        ("mid", "mid"),  # use special string key for mid‑tide
+    ]
+
+    # mean tide and mid‑tide boolean mask
+    mean_tide = tides_df.tide_height.mean()
+    tides_df["is_mid_tide"] = np.abs(tides_df.tide_height - mean_tide) <= mid_delta
 
     out = {"cell_id": int(cell_id)}
     for satname, offset_name, kstride in groups:
-        # Due to date rounding we will get 1-2 days that are bad solar windows and should not be sampled
-        key_df = tides_df[tides_df[offset_name] < 1]
-
         # Subsample every N days
         df = (
-            key_df.loc[
-                key_df.groupby("solar_date")[offset_name].idxmin(),
-                ["solar_date", "acquired", "height_bin", offset_name],
+            tides_df.loc[
+                tides_df.groupby("solar_date")[offset_name].idxmin(),
+                ["solar_date", "acquired", "height_bin", offset_name, "is_mid_tide"],
             ]
             .iloc[::kstride]
             .reset_index(drop=True)
@@ -124,12 +136,11 @@ def compute_tide_info(
 
         logger.info(f"{satname} {kstride}-day stride count: {len(df)}")
 
-        search_ranges = [
-            (0, "low"),
-            (nbins - 1, "high"),
-        ]
         for height, height_name in search_ranges:
-            is_height = df.height_bin == height
+            if height_name == "mid":
+                is_height = df.is_mid_tide
+            else:
+                is_height = df.height_bin == height
             # reset to a fresh 0…N‑1 integer index; the original DatetimeIndex
             # is no longer needed and there is only one level
             tide_match = df[is_height].copy().reset_index(drop=True)
@@ -146,7 +157,22 @@ def compute_tide_info(
             out[f"{satname}_{height_name}_days_between_p95"] = float(full_diffs.quantile(0.95))  # type: ignore
             out[f"{satname}_{height_name}_count"] = int(is_height.sum())
 
-    return out
+    # ---- per‑cell tidal heuristics ----
+    heur: Dict[str, Any] = {
+        "cell_id": int(cell_id),
+        "tide_min": float(tide_elevations.min()),
+        "tide_max": float(tide_elevations.max()),
+        "tide_mean": float(tide_elevations.mean()),
+        "tide_std": float(tide_elevations.std(ddof=1)),
+        "tide_median": float(np.median(tide_elevations)),
+        "tide_p95": float(np.percentile(tide_elevations, 95)),
+        "tide_range": float(tide_elevations.max() - tide_elevations.min()),
+        "tide_iqr": float(np.percentile(tide_elevations, 75) - np.percentile(tide_elevations, 25)),
+    }
+    # add each height edge as its own column: height_edge_0, height_edge_1, …
+    heur.update({f"height_edge_{i}": float(edge) for i, edge in enumerate(height_edges)})
+
+    return out, heur
 
 
 # helper so we can use imap_unordered and keep tqdm progress
@@ -176,6 +202,13 @@ def _star_compute(args):
 @click.option("--nbins", type=int, default=10, show_default=True, help="Number of equal‑width tide‑height bins")
 @click.option("--sentinel-stride", type=int, default=5, show_default=True, help="Stride (days) for Sentinel sampling")
 @click.option("--landsat-stride", type=int, default=8, show_default=True, help="Stride (days) for Landsat sampling")
+@click.option(
+    "--mid-delta",
+    type=float,
+    default=0.5,
+    show_default=True,
+    help="Half-width (in metres) of the mid‑tide band around the mean tide.",
+)
 @click.option("--processes", type=int, default=None, help="Number of worker processes (defaults to CPU count)")
 @click.option(
     "--out-path",
@@ -191,6 +224,7 @@ def main(
     nbins: int,
     sentinel_stride: int,
     landsat_stride: int,
+    mid_delta: float,
     processes: Optional[int],
     out_path: str,
 ) -> None:
@@ -240,7 +274,7 @@ def main(
     # 2.  Run each cell in parallel
     # ------------------------------------------------------------------ #
     logger.info(f"Computing tides in parallel (~{len(grid_df)} cells)")
-    nproc = processes or cpu_count()
+    nproc = processes or cpu_count() - 1
 
     # build task list
     tasks = []
@@ -259,13 +293,14 @@ def main(
                 planet_time,
                 sentinel_stride,
                 landsat_stride,
+                mid_delta,
             )
         )
 
     # run in parallel with a live progress bar
     logger.info("Launching worker pool …")
     with Pool(processes=nproc) as pool:
-        results = list(
+        paired = list(
             tqdm(
                 pool.imap_unordered(_star_compute, tasks, chunksize=32),
                 total=len(tasks),
@@ -273,12 +308,23 @@ def main(
             )
         )
 
+    # split into stats and heuristics
+    stats_list, heur_list = zip(*[p for p in paired if p is not None])
+
     # ------------------------------------------------------------------ #
     # 3.  Collect + save
     # ------------------------------------------------------------------ #
-    results_df = pd.DataFrame([r for r in results if r is not None])
-    results_df.to_csv(out_path, index=False)
-    logger.info(f"Wrote results to {out_path}")
+    stats_df = pd.DataFrame(stats_list)
+    heur_df = pd.DataFrame(heur_list)
+
+    stats_path = Path(out_path)
+    heur_path = stats_path.with_name(stats_path.stem + "_heuristics" + stats_path.suffix)
+
+    stats_df.to_csv(stats_path, index=False)
+    heur_df.to_csv(heur_path, index=False)
+
+    logger.info(f"Wrote summary stats to {stats_path}")
+    logger.info(f"Wrote tidal heuristics to {heur_path}")
 
 
 # Entrypoint for CLI
