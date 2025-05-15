@@ -16,7 +16,7 @@ do
         echo "Processing satellite ${SAT} and year ${YEAR}"
 
         # Update the save_dir line inside the YAML file
-        sed -i '' "s|save_dir: \".*\"|save_dir: \"${BASE}/results/${YEAR}\"|" "$YAML_FILE"
+        sed -i '' "s|save_dir: \".*\"|save_dir: \"${BASE_SAT}/results/${YEAR}\"|" "$YAML_FILE"
 
         # Define start and end dates
         START_DATE="${YEAR}-12-01"

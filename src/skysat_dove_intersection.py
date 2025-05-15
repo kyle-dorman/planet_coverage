@@ -1,16 +1,16 @@
 from functools import lru_cache
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
+from typing import Any, Tuple
 
 import click
 import geopandas as gpd
 import pandas as pd
-import pyarrow.parquet as pq
 from shapely import wkb
 from tqdm.auto import tqdm
 
 
-def load_gdf(pth, crs):
+def load_gdf(pth: Path | str, crs: str) -> gpd.GeoDataFrame:
     df_pd = pd.read_parquet(pth)
     df_pd["geometry"] = df_pd["geometry_wkb"].apply(wkb.loads)  # type: ignore
     df_pd = df_pd.drop(columns=["geometry_wkb"])
@@ -24,12 +24,9 @@ def _load_grids(path: str) -> gpd.GeoDataFrame:
     return gpd.read_file(path)
 
 
-def _parquet_empty(pth: Path) -> bool:
-    """
-    Return True if a Parquet file has zero rows without loading full data.
-    """
-    meta = pq.ParquetFile(pth).metadata
-    return meta.num_rows == 0
+# helper so we can use imap_unordered and keep tqdm progress
+def _star_compute(args: Tuple[Any, ...]) -> pd.DataFrame:
+    return process_pair(*args)
 
 
 def process_pair(
@@ -38,7 +35,7 @@ def process_pair(
     grid_path: Path,
     clear_thresh: float,
     time_window: float,  # hours
-    overlap_thresh: float,
+    overlap_area: float,
 ) -> pd.DataFrame:
     """
     Process a single Dove / SkySat file pair.
@@ -51,6 +48,8 @@ def process_pair(
         Parquet file for the matching SkySat cell.
     grid_path : Path
         Path to the GPKG file containing coastal grid polygons.
+    overlap_area : float
+        Minimum overlap area in square meters.
 
     Returns
     -------
@@ -58,8 +57,8 @@ def process_pair(
         Intersection rows with cell_id and WKB geometry.
     """
     grids_df = _load_grids(str(grid_path))
-    d_df = load_gdf(dove_path, grids_df.crs)
-    ss_df = load_gdf(skysat_path, grids_df.crs)
+    d_df = load_gdf(dove_path, grids_df.crs)  # type: ignore
+    ss_df = load_gdf(skysat_path, grids_df.crs)  # type: ignore
 
     filtered_d_df = d_df[
         (d_df.publishing_stage == "finalized")
@@ -89,15 +88,15 @@ def process_pair(
     )
 
     dss_joined["acquired_delta"] = dss_joined.dove_acquired - dss_joined.skysat_acquired
-    dss_joined["overlap_pct_crop"] = dss_joined.geometry.area / (300**2)
+    dss_joined["overlap_area"] = dss_joined.geometry.area
 
     overlapping = dss_joined[
         (dss_joined.acquired_delta < pd.Timedelta(hours=time_window))
         & (dss_joined.acquired_delta > pd.Timedelta(hours=-time_window))
-        & (dss_joined.overlap_pct_crop > overlap_thresh)
+        & (dss_joined.overlap_area > overlap_area)
     ].copy()
 
-    overlapping.drop(columns="overlap_pct_crop", inplace=True)
+    overlapping.drop(columns="overlap_area", inplace=True)
 
     # initial spatial join: match coastal grids to query cells by containment
     joined = gpd.overlay(
@@ -122,7 +121,6 @@ def process_pair(
 
     # for any missing, assign nearest cell
     if not joined_missing.empty:
-        print(f"{len(joined_missing)} SkyDat-Dove grids lack overlap; assigning nearest cell")
         nearest = gpd.sjoin_nearest(
             left_df=joined_missing[["dove_id", "skysat_id", "geometry"]],
             right_df=grids_df[["cell_id", "geometry"]],
@@ -138,7 +136,20 @@ def process_pair(
     )
     assert not overlap_with_cell_id.cell_id.isna().any()
     assert len(overlap_with_cell_id) == len(overlapping)
-    overlap_with_cell_id["geometry_wkb"] = overlap_with_cell_id.geometry.map(lambda geom: geom.wkb)
+
+    # ── normalise dtypes so they can be written to GPKG ────────────────────────
+    # GeoPackage cannot handle micro‑second timedeltas, so turn them into seconds
+    overlap_with_cell_id["acquired_delta_sec"] = overlap_with_cell_id["acquired_delta"].dt.total_seconds()
+    overlap_with_cell_id.drop(columns="acquired_delta", inplace=True)
+
+    # ensure datetimes use nanosecond resolution (default pandas) instead of µs
+    overlap_with_cell_id["dove_acquired"] = pd.to_datetime(overlap_with_cell_id["dove_acquired"]).astype(
+        "datetime64[ns]"
+    )
+    overlap_with_cell_id["skysat_acquired"] = pd.to_datetime(overlap_with_cell_id["skysat_acquired"]).astype(
+        "datetime64[ns]"
+    )
+
     return overlap_with_cell_id
 
 
@@ -154,7 +165,7 @@ def process_pair(
 )
 @click.option("--clear-thresh", default=75.0, show_default=True, help="Minimum SkySat clear_percent.")
 @click.option("--time-window", default=1.0, show_default=True, help="Max |Δacquired| in HOURS between Dove and SkySat.")
-@click.option("--overlap-thresh", default=1.0, show_default=True, help="Minimum overlap percentage (1.0 ≙ 100 %).")
+@click.option("--overlap-area", default=300**2, show_default=True, help="Minimum overlap area in square meters.")
 @click.option("--nproc", default=cpu_count() - 1, show_default=True, help="Number of worker processes.")
 @click.option("--chunksize", default=16, show_default=True, help="Chunk size passed to imap_unordered.")
 @click.option(
@@ -164,7 +175,16 @@ def process_pair(
     show_default=True,
     help="Output GPKG path.",
 )
-def main(base_dir, grid_file, clear_thresh, time_window, overlap_thresh, nproc, chunksize, out):
+def main(
+    base_dir: str,
+    grid_file: str,
+    clear_thresh: float,
+    time_window: float,
+    overlap_area: float,
+    nproc: int,
+    chunksize: int,
+    out: str,
+) -> None:
     """
     Find intersecting Dove/SkySat footprints for every matching pair of Parquet
     files under *base_dir* and write a combined GPKG.
@@ -175,7 +195,7 @@ def main(base_dir, grid_file, clear_thresh, time_window, overlap_thresh, nproc, 
     tasks = []
     for dove_path in base.glob("dove/results/2017/*/*/*/data.parquet"):
         skysat_path = Path(str(dove_path).replace("/dove/", "/skysat/"))
-        if not skysat_path.exists() or _parquet_empty(dove_path) or _parquet_empty(skysat_path):
+        if not skysat_path.exists():
             continue
         tasks.append(
             (
@@ -184,7 +204,7 @@ def main(base_dir, grid_file, clear_thresh, time_window, overlap_thresh, nproc, 
                 grid_path,
                 clear_thresh,
                 time_window,
-                overlap_thresh,
+                overlap_area,
             )
         )
 
@@ -192,31 +212,24 @@ def main(base_dir, grid_file, clear_thresh, time_window, overlap_thresh, nproc, 
         click.echo("No valid SkySat–Dove pairs found.")
         return
 
-    nproc = min(cpu_count(), nproc)
+    nproc = min(cpu_count(), nproc, len(tasks))
     click.echo(f"Processing {len(tasks)} pairs on {nproc} processes …")
-
-    def _star(args):
-        try:
-            return process_pair(*args)
-        except Exception as exc:
-            click.echo(f"⚠️  Skipping {args[0].parent.name}: {exc}")
-            return None
 
     with Pool(processes=nproc) as pool:
         results = list(
             tqdm(
-                filter(None, pool.imap_unordered(_star, tasks, chunksize=chunksize)),
+                pool.imap_unordered(_star_compute, tasks, chunksize=chunksize),
                 total=len(tasks),
                 desc="Pairs",
             )
         )
 
+    results = [r for r in results if r is not None]
     if results:
         all_results = pd.concat(results, ignore_index=True)
         gdf = gpd.GeoDataFrame(all_results, geometry="geometry", crs=_load_grids(grid_path).crs)
-        out_path = Path(out)
-        gdf.to_file(out_path, driver="GPKG")
-        click.echo(f"✅ Saved {len(all_results)} intersections → {out_path}")
+        gdf.to_file(base / out, driver="GPKG")
+        click.echo(f"✅ Saved {len(all_results)} intersections → {base / out}")
     else:
         click.echo("No valid intersections produced.")
 

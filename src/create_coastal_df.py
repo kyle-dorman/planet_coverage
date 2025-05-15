@@ -53,7 +53,7 @@ def _star_compute(args):
     return process_file(*args)
 
 
-def process_file(grid_gdf: gpd.GeoDataFrame, lazy_df: pl.LazyFrame, out_dir: Path, min_area_m: float) -> None:
+def process_file(grid_gdf: gpd.GeoDataFrame, lazy_df: pl.LazyFrame, out_dir: Path) -> None:
     """Process one data.parquet file for coastal points."""
     assert grid_gdf.crs is not None
     assert grid_gdf.poly_area is not None
@@ -82,9 +82,6 @@ def process_file(grid_gdf: gpd.GeoDataFrame, lazy_df: pl.LazyFrame, out_dir: Pat
 
     # remove any duplicate captures per grid_id/id combination
     joined = joined.drop_duplicates(subset=["grid_id", "id"])
-
-    # Filter intersections smaller than a certain area
-    joined = joined[joined.geometry.area > min_area_m]
 
     if joined.empty:
         return
@@ -130,13 +127,6 @@ def process_file(grid_gdf: gpd.GeoDataFrame, lazy_df: pl.LazyFrame, out_dir: Pat
     help="Base directory to save results to",
 )
 @click.option(
-    "--min-area-m",
-    type=float,
-    default=100**3 * 3,  # 100x100 grid cell at PlanetScope resolution
-    show_default=True,
-    help="Minimum intersection size in meters",
-)
-@click.option(
     "--chunk-size",
     "-n",
     type=int,
@@ -149,7 +139,6 @@ def main(
     query_grids_path: Path,
     coastal_grids_path: Path,
     save_dir: Path,
-    min_area_m: float,
     chunk_size: int,
 ):
     """
@@ -240,7 +229,7 @@ def main(
         # select coastal rows via index lookup, then restore grid_id as column
         coastal_batch = gdf_coastal[gdf_coastal.grid_id.isin(batch_grid_idxes)].reset_index()
         # create tasks to run
-        tasks.append((coastal_batch, lazy_df, get_save_path(save_dir, idx), min_area_m))
+        tasks.append((coastal_batch, lazy_df, get_save_path(save_dir, idx)))
 
     # Run in parallel
     logger.info("Running tasks in parallel")
