@@ -2,7 +2,7 @@
 
 set -e
 
-BASE="/Users/kyledorman/data/planet_coverage/sf_only"
+BASE="/Users/kyledorman/data/planet_coverage/ca_only"
 
 # Loop from 2013 to 2024
 for YEAR in {2013..2024}

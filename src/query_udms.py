@@ -156,7 +156,7 @@ def dataframe_row(item: dict, cell_id: int) -> DataFrameRow:
         clear_percent=clear_percent,
         quality_category=QualityCategory(props["quality_category"]).value,
         ground_control=props.get("ground_control", True),
-        publishing_stage=PublishingStage(props["publishing_stage"]).value,
+        publishing_stage=PublishingStage(props.get("publishing_stage", PublishingStage.Finalized.value)).value,
         satellite_azimuth=props["satellite_azimuth"],
         sun_azimuth=props["sun_azimuth"],
         sun_elevation=props["sun_elevation"],
@@ -199,16 +199,16 @@ async def process_cell(
 
         item_list = await retry_task(_collect_lazy, config.download_retries_max, config.download_backoff)
 
+        df = pl.DataFrame(
+            [dataframe_row(item=item, cell_id=cell_id) for item in item_list], schema=DataFrameRow.polars_schema()
+        )  # type: ignore
+
         # If no items were returned, create an empty sentinel file instead of
         # writing an empty Parquet. The presence of '.ran' marks this cell as
         # processed.
         if not item_list:
             marker_path.touch()
             return
-
-        df = pl.DataFrame(
-            [dataframe_row(item=item, cell_id=cell_id) for item in item_list], schema=DataFrameRow.polars_schema()
-        )  # type: ignore
 
         # Save as Parquet using Polars (automatically optimizes types)
         df.write_parquet(

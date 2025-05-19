@@ -75,7 +75,7 @@ class TideModel:
 
         Args:
             latlon (np.ndarray): Target latitude, longitude as list (N, 2)
-            times (listlist[[datetime]]): List of datetimes to process (M, m)
+            times (listlist[[datetime]]): List of datetimes to process (N, m)
             samples (int, optional): Number of intorpolation samples. Defaults to 10.
 
         Returns:
