@@ -2,6 +2,7 @@
 import logging
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
+from typing import Iterator
 
 import click
 import geopandas as gpd
@@ -14,6 +15,8 @@ from tqdm import tqdm
 from src.config import Instrument, ItemType, PublishingStage, QualityCategory
 from src.query_udms import DataFrameRow
 from src.tides import tide_model
+
+DEFAULT_NUM_PROCS = max(1, cpu_count() - 1)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,7 @@ SCHEMA = {
     "tide_height": pl.Float32,
     "tide_height_bin": pl.Int32,
     "is_mid_tide": pl.Boolean,
+    "has_tide_data": pl.Boolean,
 }
 
 
@@ -53,13 +57,76 @@ def get_save_path(base: Path, index: int) -> Path:
     return save_path
 
 
+def join_query_cells_to_grid(query_gdf: gpd.GeoDataFrame, grid_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    # initial spatial join: match coastal grids to query cells by containment
+    joined = gpd.sjoin(
+        left_df=grid_gdf[["grid_id", "geometry"]],
+        right_df=query_gdf[["cell_id", "geometry"]],
+        how="left",
+    )
+
+    # separate those with overlap from those without
+    joined_overlap = joined[joined["cell_id"].notnull()].copy()
+    joined_missing = joined[joined["cell_id"].isnull()]
+
+    # for any missing, assign nearest cell
+    if not joined_missing.empty:
+        logger.info(f"{len(joined_missing)} coastal grids lack overlap; assigning nearest cell")
+        nearest = gpd.sjoin_nearest(
+            joined_missing[["grid_id", "geometry"]],
+            query_gdf[["cell_id", "geometry"]],
+            how="left",
+        )
+        # combine overlap and nearest
+        joined = pd.concat([joined_overlap, nearest], ignore_index=True)
+        joined = gpd.GeoDataFrame(joined, geometry="geometry")
+    else:
+        joined = joined_overlap
+
+    return joined
+
+
+def iter_grid_batches(joined: gpd.GeoDataFrame, chunk_size: int) -> Iterator[list[int]]:
+    """
+    Yield batches of ``grid_id`` values grouped by their ``cell_id``.
+    Each batch contains **all** ``grid_id`` members of one or more ``cell_id`` groups
+    and aims for roughly ``chunk_size`` total grid‑ids.
+    If a single ``cell_id`` has more than ``chunk_size`` grid‑ids we still yield all
+    of them together so that the relationship is preserved.
+    """
+    seen_grid_ids = set()
+    # Create mapping: cell_id -> list[grid_id]
+    cell_to_grids = joined.groupby("cell_id")["grid_id"].apply(list).sort_index()  # ensure deterministic order
+
+    batch: list[int] = []
+    for grids in cell_to_grids.values:
+        grids = [gid for gid in grids if gid not in seen_grid_ids]
+        seen_grid_ids.update(grids)
+
+        # If starting a new batch, just take the grids
+        if not batch:
+            batch.extend(grids)
+        else:
+            # If adding the next cell's grids would exceed the target size,
+            # emit the current batch first.
+            if len(batch) + len(grids) > chunk_size:
+                yield batch
+                batch = grids
+            else:
+                batch.extend(grids)
+
+    # Emit any remainder
+    if batch:
+        yield batch
+
+
 # helper so we can use imap_unordered and keep tqdm progress
 def _star_compute(args):
     return process_file(*args)
 
 
 def process_file(
-    cell_meta_df: gpd.GeoDataFrame,
+    cell_geom_gdf: gpd.GeoDataFrame,
     grid_gdf: gpd.GeoDataFrame,
     planet_df: pl.LazyFrame,
     height_edges_df: pd.DataFrame,
@@ -91,7 +158,9 @@ def process_file(
     # --- find intersection of all grids and downloaded satellite captures
 
     # intersect image footprints with grid polygons
-    joined = gpd.overlay(grid_gdf[["grid_id", "geometry", "poly_area"]], satellite_gdf, how="intersection")
+    joined = gpd.overlay(
+        grid_gdf.reset_index()[["grid_id", "geometry", "poly_area"]], satellite_gdf, how="intersection"
+    )
 
     # remove any duplicate captures per grid_id/id combination
     joined = joined.drop_duplicates(subset=["grid_id", "id"])
@@ -103,8 +172,11 @@ def process_file(
     tm = tide_model(tide_data_dir, "GOT4.10", "GOT")
     assert tm is not None
     joined["tide_height"] = 0.0
+    # Some cells might not have tide heuristic information
+    joined["has_tide_data"] = joined.cell_id.isin(height_edges_df[~height_edges_df.height_edge_0.isna()].index)
+
     for cell_id, rows in joined.groupby("cell_id"):
-        geom = cell_meta_df.loc[cell_id].geometry
+        geom = cell_geom_gdf.loc[cell_id].geometry
         latlon = np.array([geom.y, geom.x])  # type: ignore
         tide_heights = tm.tide_elevations(latlon, [rows.acquired.to_numpy()])  # type: ignore
         joined.loc[rows.index, "tide_height"] = tide_heights[0]
@@ -186,6 +258,14 @@ def process_file(
     show_default=True,
     help="Half-range (in meters) around mean tide used to flag ‘mid‑tide’ captures",
 )
+@click.option(
+    "--num-procs",
+    "-p",
+    type=int,
+    default=DEFAULT_NUM_PROCS,
+    show_default=True,
+    help="Number of worker processes for parallel execution",
+)
 def main(
     base_dir: Path,
     query_grids_path: Path,
@@ -195,6 +275,7 @@ def main(
     save_dir: Path,
     chunk_size: int,
     mid_tide_height: float,
+    num_procs: int,
 ):
     """
     Match coastal grid polygons to PlanetScope image footprints,
@@ -210,6 +291,7 @@ def main(
     Run in parallel, grouped by batches of grid_ids.
 
     The --mid-tide-height option controls the ± height window for the mid-tide flag.
+    The --num-procs option controls how many worker processes are used.
     """
     files = list(base_dir.glob(GLOB_PATTERN))
     if not len(files):
@@ -227,8 +309,8 @@ def main(
         return
 
     logger.info("Loading query grids from %s", query_grids_path)
-    gdf_cells = gpd.read_file(query_grids_path)
-    assert gdf_cells.crs is not None
+    query_gdf = gpd.read_file(query_grids_path)
+    assert query_gdf.crs is not None
 
     logger.info("Loading coastal grids from %s", coastal_grids_path)
     gdf_coastal = gpd.read_file(coastal_grids_path).rename(columns={"cell_id": "grid_id"})
@@ -241,79 +323,55 @@ def main(
         tide_heuristics_df = pd.read_parquet(tide_heuristics_path)
 
     logger.info("Finding query grid and coastal grid intersection")
-    assert gdf_coastal.crs == gdf_cells.crs, "GDFs must be in the same CRS"
+    assert gdf_coastal.crs == query_gdf.crs, "GDFs must be in the same CRS"
 
-    # initial spatial join: match coastal grids to query cells by containment
-    joined = gpd.sjoin(
-        left_df=gdf_coastal[["grid_id", "geometry"]],
-        right_df=gdf_cells[["cell_id", "geometry"]],
-        how="left",
-    )
+    joined = join_query_cells_to_grid(query_gdf, gdf_coastal).set_index("cell_id")
+    gdf_coastal = gdf_coastal.set_index("grid_id")
 
-    # separate those with overlap from those without
-    joined_overlap = joined[joined["cell_id"].notnull()].copy()
-    joined_missing = joined[joined["cell_id"].isnull()]
-
-    # for any missing, assign nearest cell
-    if not joined_missing.empty:
-        logger.info(f"{len(joined_missing)} coastal grids lack overlap; assigning nearest cell")
-        nearest = gpd.sjoin_nearest(
-            joined_missing[["grid_id", "geometry"]],
-            gdf_cells[["cell_id", "geometry"]],
-            how="left",
-        )
-        # combine overlap and nearest
-        joined = pd.concat([joined_overlap, nearest], ignore_index=True)
-    else:
-        joined = joined_overlap
-
-    # filter to just cell_ids with data
+    # filter to just cell_ids that both appear in the data *and* have coastal overlap
     valid_cell_ids = all_lazy.select(pl.col("cell_id").unique().sort()).collect().to_series().to_list()
-    joined = joined[joined.cell_id.isin(valid_cell_ids)]
+    valid_cell_ids = [cid for cid in valid_cell_ids if cid in joined.index]
+
+    # restrict to those IDs; since we filtered, no KeyError will arise
+    joined = joined.loc[valid_cell_ids].reset_index().set_index("grid_id")
 
     logger.info(
         f"""
         Found {len(joined)} intersections between
         {len(gdf_coastal)} coastal grids,
-        {len(gdf_cells)} total query grids and
+        {len(query_gdf)} total query grids and
         {len(valid_cell_ids)} valid query grids."""
     )
-    grid_ids = sorted(joined.grid_id.unique())
 
-    # runs once in main() – not inside every task
-    cell_meta = gdf_cells.copy()
-    cell_meta.geometry = cell_meta.centroid
-    cell_meta = cell_meta.to_crs("EPSG:4326").set_index("cell_id")[["geometry"]]
-    heuristics = tide_heuristics_df.set_index("cell_id")
-    height_edges = heuristics.filter(like="height_edge_")
+    # Gather per cell tide height edges and geometry centroids
+    query_gdf.geometry = query_gdf.centroid
+    query_gdf = query_gdf.to_crs("EPSG:4326").set_index("cell_id")[["geometry"]]
+    height_edges = tide_heuristics_df.set_index("cell_id").filter(like="height_edge_")
 
-    idxes = list(range(0, len(grid_ids), chunk_size))
-    logger.info(f"Creating {len(idxes)} tasks for processing")
+    logger.info(f"Creating task batches (~{chunk_size} grid_ids each, grouped by cell_id)")
     tasks = []
-    for idx in idxes:
-        stop = idx + chunk_size
-        batch_grid_idxes = grid_ids[idx:stop]
+    for batch_idx, batch_grid_idxes in enumerate(iter_grid_batches(joined.reset_index(), chunk_size=chunk_size)):
         # select cell_ids via grid_id lookup
-        cell_ids = joined[joined.grid_id.isin(batch_grid_idxes)].cell_id.unique()
+        cell_ids = joined.loc[batch_grid_idxes].cell_id.unique()
         lazy_df = all_lazy.filter(pl.col("cell_id").is_in(cell_ids))
-        # select coastal rows via index lookup, then restore grid_id as column
-        coastal_batch = gdf_coastal[gdf_coastal.grid_id.isin(batch_grid_idxes)].reset_index()
+        # select coastal rows via index lookup
+        coastal_batch = gdf_coastal.loc[batch_grid_idxes]
         # create tasks to run
         tasks.append(
             (
-                cell_meta,
+                query_gdf,
                 coastal_batch,
                 lazy_df,
-                height_edges,
-                get_save_path(save_dir, idx),
+                height_edges.reindex(labels=cell_ids),
+                get_save_path(save_dir, batch_idx),
                 tide_data_dir,
                 mid_tide_height,
             )
         )
 
     # Run in parallel
-    logger.info("Running tasks in parallel")
-    num_workers = max(1, cpu_count() - 1)
+    logger.info(f"Running {len(tasks)} tasks in parallel with {num_procs} worker process(es)")
+    num_workers = max(1, min(num_procs, cpu_count()))
     with Pool(num_workers) as pool:
         for _ in tqdm(pool.imap_unordered(_star_compute, tasks), total=len(tasks), desc="Processing tasks"):
             pass
