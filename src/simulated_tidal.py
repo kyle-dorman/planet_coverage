@@ -66,6 +66,10 @@ def compute_tide_info(
         }
     )
 
+    tide_max = tide_elevations.max()
+    tide_min = tide_elevations.min()
+    tide_range = tide_max - tide_min
+
     # ------------------------------------------------------------------
     # Build quantile‑based bins so each bin holds ≈ 1/nbins of the samples
     # (equal‑frequency bins instead of equal‑width across the numeric range)
@@ -128,11 +132,23 @@ def compute_tide_info(
         df = (
             tides_df.loc[
                 tides_df.groupby("solar_date")[offset_name].idxmin(),
-                ["solar_date", "acquired", "height_bin", offset_name, "is_mid_tide"],
+                ["solar_date", "acquired", "height_bin", offset_name, "is_mid_tide", "tide_height"],
             ]
             .iloc[::kstride]
             .reset_index(drop=True)
         )
+
+        observed_min = df.tide_height.min()
+        observed_max = df.tide_height.max()
+        observed_tide_range = observed_max - observed_min
+        out[f"{satname}_min_observed_height"] = observed_min
+        out[f"{satname}_max_observed_height"] = observed_max
+        out[f"{satname}_observed_tide_range"] = observed_tide_range
+        out[f"{satname}_observed_spread"] = observed_tide_range / tide_range
+        out[f"{satname}_observed_low_tide_offset_rel"] = (observed_min - tide_min) / tide_range
+        out[f"{satname}_observed_high_tide_offset_rel"] = (tide_max - observed_max) / tide_range
+        out[f"{satname}_observed_low_tide_offset"] = observed_min - tide_min
+        out[f"{satname}_observed_high_tide_offset"] = tide_max - observed_max
 
         logger.info(f"{satname} {kstride}-day stride count: {len(df)}")
 
@@ -247,27 +263,17 @@ def main(
     # ------------------------------------------------------------------ #
     logger.info("Loading ocean grids and coastline layers")
     ocean_grids = gpd.read_file(Path(base_dir) / "ocean_grids.gpkg")
-    # ca_ocean = gpd.read_file(Path(base_dir) / "ca_ocean.geojson")
     ocean_grids["centroid"] = ocean_grids.geometry.centroid
     all_grids = ocean_grids.to_crs("EPSG:4326")
-    # all_grids = all_grids[all_grids.geometry.intersects(ca_ocean.union_all())]
 
-    mainlands = gpd.read_file(Path(base_dir).parent / "shorelines" / "mainlands.gpkg")
-    big_islands = gpd.read_file(Path(base_dir).parent / "shorelines" / "big_islands.gpkg")
-    small_islands = gpd.read_file(Path(base_dir).parent / "shorelines" / "small_islands.gpkg")
+    coastline = gpd.read_file(Path(base_dir).parent / "coastal_stips.gpkg")
 
-    assert mainlands.crs == all_grids.crs
+    assert coastline.crs == all_grids.crs
 
     logger.info("Spatial join to find coastal cells")
-    coastal_ids = np.unique(
-        np.concatenate(
-            [
-                gpd.sjoin(all_grids[["cell_id", "geometry"]], lyr[["geometry"]]).cell_id.unique()
-                for lyr in (mainlands, big_islands, small_islands)
-            ]
-        )
-    )
-    grid_df = ocean_grids.loc[ocean_grids.cell_id.isin(coastal_ids), ["cell_id", "centroid"]]
+    coastal_ids = gpd.sjoin(all_grids[["cell_id", "geometry"]], coastline[["geometry"]]).cell_id.unique()
+    ocean_grids = ocean_grids.set_index("cell_id")
+    grid_df = ocean_grids.loc[coastal_ids, ["centroid"]].reset_index()
     transformer = Transformer.from_crs(ocean_grids.crs, all_grids.crs, always_xy=True)
 
     # ------------------------------------------------------------------ #

@@ -13,6 +13,7 @@ from shapely import wkb
 from tqdm import tqdm
 
 from src.config import Instrument, ItemType, PublishingStage, QualityCategory
+from src.geo_util import assign_intersection_id
 from src.query_udms import DataFrameRow
 from src.tides import tide_model
 
@@ -30,6 +31,7 @@ SCHEMA = {
     "satellite_id": pl.Utf8,
     "instrument": pl.Enum(Instrument),
     "cell_id": pl.UInt32,
+    "query_cell_id": pl.UInt32,
     "grid_id": pl.UInt32,
     "has_8_channel": pl.Boolean,
     "has_sr_asset": pl.Boolean,
@@ -42,6 +44,7 @@ SCHEMA = {
     "sun_elevation": pl.Float32,
     "view_angle": pl.Float32,
     "geometry_wkb": pl.Binary,
+    "intersects_grid_centroid": pl.Boolean,
     "coverage_pct": pl.Float32,
     "tide_height": pl.Float32,
     "tide_height_bin": pl.Int32,
@@ -99,7 +102,7 @@ def iter_grid_batches(joined: gpd.GeoDataFrame, chunk_size: int) -> Iterator[lis
     cell_to_grids = joined.groupby("cell_id")["grid_id"].apply(list).sort_index()  # ensure deterministic order
 
     batch: list[int] = []
-    for grids in cell_to_grids.values:
+    for grids in tqdm(cell_to_grids.values):
         grids = [gid for gid in grids if gid not in seen_grid_ids]
         seen_grid_ids.update(grids)
 
@@ -133,10 +136,12 @@ def process_file(
     out_dir: Path,
     tide_data_dir: Path,
     mid_tide_height: float,
+    coast_tidal_grid_mapper: pd.DataFrame,
 ) -> None:
     """Process one data.parquet file for coastal points."""
     assert grid_gdf.crs is not None
     assert grid_gdf.poly_area is not None
+    assert grid_gdf.grid_center is not None
     dest = out_dir / "coastal_points.parquet"
     if dest.exists():
         return
@@ -151,34 +156,43 @@ def process_file(
     df_pd["geometry"] = df_pd["geometry_wkb"].apply(wkb.loads)  # type: ignore
     df_pd = df_pd.drop(columns=["geometry_wkb"])
     satellite_gdf = gpd.GeoDataFrame(df_pd, geometry="geometry", crs="EPSG:4326").to_crs(grid_gdf.crs)
-
-    # Verify all geometries are valid
-    assert satellite_gdf.geometry.is_valid.all(), "Found invalid geometries!"
+    valid_rows = satellite_gdf.geometry.is_valid
+    if not valid_rows.all():
+        satellite_gdf = satellite_gdf[valid_rows]
+        logger.warning(f"Found {(~valid_rows).sum()} invalid rows. Skipping them...")
 
     # --- find intersection of all grids and downloaded satellite captures
 
     # intersect image footprints with grid polygons
-    joined = gpd.overlay(
-        grid_gdf.reset_index()[["grid_id", "geometry", "poly_area"]], satellite_gdf, how="intersection"
-    )
+    joined = gpd.overlay(grid_gdf[["grid_id", "geometry", "poly_area"]], satellite_gdf, how="intersection")
 
     # remove any duplicate captures per grid_id/id combination
-    joined = joined.drop_duplicates(subset=["grid_id", "id"])
+    joined = joined.drop_duplicates(subset=["grid_id", "id"]).rename(columns={"cell_id": "query_cell_id"})
 
     if joined.empty:
         return
+
+    # Assign the a consistent cell_id regardless of where the data comes from
+    joined = joined.set_index("grid_id").join(coast_tidal_grid_mapper, how="left").reset_index()
+    assert not joined.cell_id.isna().any(), joined.cell_id.isna().sum()
 
     # Add tide information
     tm = tide_model(tide_data_dir, "GOT4.10", "GOT")
     assert tm is not None
     joined["tide_height"] = 0.0
+
     # Some cells might not have tide heuristic information
     joined["has_tide_data"] = joined.cell_id.isin(height_edges_df[~height_edges_df.height_edge_0.isna()].index)
 
     for cell_id, rows in joined.groupby("cell_id"):
         geom = cell_geom_gdf.loc[cell_id].geometry
         latlon = np.array([geom.y, geom.x])  # type: ignore
-        tide_heights = tm.tide_elevations(latlon, [rows.acquired.to_numpy()])  # type: ignore
+        try:
+            tide_heights = tm.tide_elevations(latlon, [rows.acquired.to_numpy()])  # type: ignore
+        except IndexError as e:
+            logger.exception(e)
+            logger.error(f"No closest point for cell_id {cell_id}")
+            tide_heights = np.full((1, len(rows.acquired)), np.nan)
         joined.loc[rows.index, "tide_height"] = tide_heights[0]
 
     # Bin tide heights
@@ -193,6 +207,11 @@ def process_file(
     # Add percent of input geometry that is covered by satellite capture
     joined["coverage_pct"] = joined.geometry.area / joined["poly_area"]
 
+    # Compute if a capture intersects a grid_cell centroid
+    joined = joined.join(grid_gdf.set_index("grid_id").grid_center, on="grid_id", how="left")
+    assert joined.grid_center.isna().sum() == 0
+    joined["intersects_grid_centroid"] = joined.intersects(joined.grid_center)  # type: ignore
+
     # Map back to Planet crs
     joined = joined.to_crs("EPSG:4326")
 
@@ -201,7 +220,7 @@ def process_file(
 
     # joined now has all columns from gdf + a `grid_id` and the index of the matched pt
     # Drop the extra index column that sjoin adds and the point geometry column
-    joined = joined.drop(columns=["poly_area", "geometry"])
+    joined = joined.drop(columns=["poly_area", "geometry", "grid_center"])
 
     # Convert to Polars (or pandas) to write out
     pl_out = pl.from_pandas(joined, schema_overrides=SCHEMA, include_index=False)
@@ -304,17 +323,24 @@ def main(
         schema=DataFrameRow.polars_schema(),
     )
 
-    if save_dir.exists():
-        logger.error(f"save_dir {save_dir} exists!")
-        return
-
     logger.info("Loading query grids from %s", query_grids_path)
     query_gdf = gpd.read_file(query_grids_path)
+    all_cell_ids = query_gdf.cell_id.unique()
     assert query_gdf.crs is not None
 
     logger.info("Loading coastal grids from %s", coastal_grids_path)
     gdf_coastal = gpd.read_file(coastal_grids_path).rename(columns={"cell_id": "grid_id"})
     gdf_coastal["poly_area"] = gdf_coastal.geometry.area
+    gdf_coastal["grid_center"] = gdf_coastal.geometry.centroid
+
+    coast_tidal_grid_mapper = assign_intersection_id(
+        gdf_coastal[["grid_id", "geometry"]],
+        query_gdf[["cell_id", "geometry"]],
+        "grid_id",
+        "cell_id",
+        "ESRI:54008",
+        include_closest=True,
+    )[["grid_id", "cell_id"]].set_index("grid_id")
 
     logger.info("Loading tide heuristics from %s", tide_heuristics_path)
     if tide_heuristics_path.suffix.lower() == ".csv":
@@ -346,7 +372,7 @@ def main(
     # Gather per cell tide height edges and geometry centroids
     query_gdf.geometry = query_gdf.centroid
     query_gdf = query_gdf.to_crs("EPSG:4326").set_index("cell_id")[["geometry"]]
-    height_edges = tide_heuristics_df.set_index("cell_id").filter(like="height_edge_")
+    height_edges = tide_heuristics_df.set_index("cell_id").filter(like="height_edge_").reindex(labels=all_cell_ids)
 
     logger.info(f"Creating task batches (~{chunk_size} grid_ids each, grouped by cell_id)")
     tasks = []
@@ -360,12 +386,13 @@ def main(
         tasks.append(
             (
                 query_gdf,
-                coastal_batch,
+                coastal_batch.reset_index(),
                 lazy_df,
-                height_edges.reindex(labels=cell_ids),
+                height_edges,
                 get_save_path(save_dir, batch_idx),
                 tide_data_dir,
                 mid_tide_height,
+                coast_tidal_grid_mapper,
             )
         )
 
