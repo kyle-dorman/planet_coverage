@@ -1,4 +1,5 @@
 import logging
+import pdb
 import warnings
 from pathlib import Path
 
@@ -17,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-BASE = Path("/Users/kyledorman/data/planet_coverage/ca_only/")  # <-- update this
+BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")  # <-- update this
 FIG_DIR = BASE.parent / "figs" / BASE.name
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -47,6 +48,25 @@ con.execute(
 """
 )
 logger.info("Registered DuckDB view 'samples_all'")
+
+query = """
+SELECT
+    grid_id,
+    COUNT_IF(has_8_channel) AS count_8_channel,
+    COUNT_IF(NOT has_8_channel) AS count_4_channel,
+    COUNT(*) AS sample_count,
+FROM samples_all
+WHERE item_type = 'PSScene'
+GROUP BY grid_id
+"""
+
+
+df = con.execute(query).fetchdf().set_index("grid_id")
+
+
+pdb.set_trace()
+
+assert False
 
 query = """
 -- one row per grid_id × calendar-month

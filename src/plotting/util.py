@@ -4,7 +4,9 @@ from typing import Optional, Tuple
 
 import cartopy.crs as ccrs
 import geopandas as gpd
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from matplotlib import colors, ticker
 
@@ -78,7 +80,8 @@ def plot_gdf_column(
     show_coastlines: bool = False,
     show_grid: bool = False,
     title: Optional[str] = None,
-    save_path: str | None = None,
+    save_path: str | Path | None = None,
+    show: bool = True,
     pad_fraction: float = 0.05,  # extra space around data bounds
 ) -> None:
     """
@@ -96,6 +99,21 @@ def plot_gdf_column(
     if column not in gdf.columns:
         raise KeyError(f"{column!r} not found in GeoDataFrame")
 
+    orig_column = column
+
+    # ------------------------------------------------------------------
+    # Detect datetime columns and transform
+    # ------------------------------------------------------------------
+    is_datetime = np.issubdtype(gdf[column].dtype, np.datetime64)  # type: ignore
+    if is_datetime:
+        numeric_vals = mdates.date2num(gdf[column].values)  # float array
+    else:
+        numeric_vals = gdf[column].astype(float).values
+
+    gdf = gdf.copy()
+    gdf["_tmp"] = numeric_vals  # temp numeric column
+    column = "_tmp"
+
     data = gdf[column].astype(float)
 
     # ------------------------------------------------------------------
@@ -106,16 +124,27 @@ def plot_gdf_column(
     if vmax is None:
         vmax = data.max()
 
-    if scale == "log":
-        if (data <= 0).any():
-            raise ValueError("Log scale selected but column contains non-positive values.")
-        norm = colors.LogNorm(vmin=vmin, vmax=vmax)
-        formatter = ticker.FuncFormatter(lambda y, _: f"{y:g}")
-        locator = ticker.LogLocator(base=10, numticks=10)
+    if is_datetime:
+        norm = colors.Normalize(vmin=numeric_vals.min(), vmax=numeric_vals.max())  # type: ignore
+
+        # human-readable ticks every N months
+        def _fmt(x, _):
+            return mdates.num2date(x).strftime("%Y-%m")
+
+        formatter = ticker.FuncFormatter(_fmt)
+        locator = ticker.MaxNLocator(nbins=6)  # or mdates.MonthLocator()
     else:
-        norm = colors.Normalize(vmin=vmin, vmax=vmax)
-        formatter = ticker.ScalarFormatter()
-        locator = ticker.MaxNLocator(nbins=6)
+        # keep your linear / log branch as-is
+        if scale == "log":
+            if (data <= 0).any():
+                raise ValueError("Log scale selected but column contains non-positive values.")
+            norm = colors.LogNorm(vmin=vmin, vmax=vmax)
+            formatter = ticker.FuncFormatter(lambda y, _: f"{y:g}")
+            locator = ticker.LogLocator(base=10, numticks=10)
+        else:
+            norm = colors.Normalize(vmin=vmin, vmax=vmax)
+            formatter = ticker.ScalarFormatter()
+            locator = ticker.MaxNLocator(nbins=6)
 
     cmap = plt.get_cmap(cmap)  # type: ignore
 
@@ -158,7 +187,7 @@ def plot_gdf_column(
     cbar = fig.colorbar(sm, ax=ax, orientation="vertical", shrink=0.65, pad=0.02, format=formatter)
     cbar.locator = locator
     cbar.update_ticks()
-    cbar.set_label(column)
+    cbar.set_label(orig_column)
 
     if title:
         ax.set_title(title, pad=12)
@@ -166,4 +195,7 @@ def plot_gdf_column(
     plt.tight_layout()
     if save_path is not None:
         plt.savefig(save_path)
-    plt.show()
+    if show:
+        plt.show()
+
+    plt.close()

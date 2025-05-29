@@ -264,17 +264,16 @@ def main(
     logger.info("Loading ocean grids and coastline layers")
     ocean_grids = gpd.read_file(Path(base_dir) / "ocean_grids.gpkg")
     ocean_grids["centroid"] = ocean_grids.geometry.centroid
-    all_grids = ocean_grids.to_crs("EPSG:4326")
 
-    coastline = gpd.read_file(Path(base_dir).parent / "coastal_stips.gpkg")
+    coastline = gpd.read_file(Path(base_dir) / "coastal_strips.gpkg")
 
-    assert coastline.crs == all_grids.crs
+    assert coastline.crs == ocean_grids.crs
 
     logger.info("Spatial join to find coastal cells")
-    coastal_ids = gpd.sjoin(all_grids[["cell_id", "geometry"]], coastline[["geometry"]]).cell_id.unique()
+    coastal_ids = gpd.sjoin(ocean_grids[["cell_id", "geometry"]], coastline[["geometry"]]).cell_id.unique()
     ocean_grids = ocean_grids.set_index("cell_id")
     grid_df = ocean_grids.loc[coastal_ids, ["centroid"]].reset_index()
-    transformer = Transformer.from_crs(ocean_grids.crs, all_grids.crs, always_xy=True)
+    transformer = Transformer.from_crs(ocean_grids.crs, "EPSG:4326", always_xy=True)
 
     # ------------------------------------------------------------------ #
     # 2.  Run each cell in parallel
