@@ -1,8 +1,11 @@
 import logging
 
+import folium
 import geopandas as gpd
+import pandas as pd
 import polars as pl
 import shapely
+from branca.colormap import linear
 from pyproj import CRS
 from shapely import wkb
 
@@ -159,3 +162,86 @@ def dedup_satellite_captures(
     )
 
     return df_best
+
+
+def plot_df(df, column_name, title, zoom=5, round_digits=0):
+    # --- Folium map for % ---
+    if df[column_name].max() == df[column_name].min():
+        scale_min = 0
+    else:
+        scale_min = df[column_name].min()
+    color_scale = linear.viridis.scale(scale_min, df[column_name].max())  # type: ignore
+
+    m = folium.Map(
+        location=[df.geometry.centroid.y.mean(), df.geometry.centroid.x.mean()],
+        zoom_start=zoom,
+        tiles="CartoDB positron",
+        width=1000,  # type: ignore
+        height=800,  # type: ignore
+    )
+
+    for grid_id, row in df.iterrows():
+        value = row[column_name]
+        geom = row.geometry
+        folium.GeoJson(
+            data=geom,
+            style_function=lambda f, col=color_scale(value): {
+                "fillColor": col,
+                "color": col,  # outline same as fill
+                "weight": 1,
+                "fillOpacity": 0.8,
+            },
+            tooltip=f"{grid_id}<br>{column_name}: {round(value, round_digits)}",
+        ).add_to(m)
+
+    color_scale.caption = title
+    color_scale.add_to(m)
+
+    return m
+
+
+def assign_intersection_id(
+    gdf: gpd.GeoDataFrame,
+    other_gdf: gpd.GeoDataFrame,
+    left_key: str,
+    right_key: str,
+    equal_area_crs: str,
+    include_closest: bool = False,
+) -> gpd.GeoDataFrame:
+    assert gdf.crs == equal_area_crs
+
+    gdf = gdf.copy()
+    gdf["poly_area"] = gdf.geometry.area
+    gdf = gdf.to_crs(other_gdf.crs)  # type: ignore
+
+    # Assign right_key to gdf
+    joined = gdf[[left_key, "geometry", "poly_area"]].overlay(other_gdf[[right_key, "geometry"]], how="intersection")
+    joined = joined.to_crs(equal_area_crs)
+    joined["overlap_pct"] = joined.geometry.area / joined.poly_area
+    joined = joined.sort_values(by=[left_key, "overlap_pct"], ascending=[True, False])
+    joined = joined.drop_duplicates(subset=left_key)
+
+    if include_closest:
+        matched_left_keys = joined[left_key].unique()
+        missing_rows = gdf[~gdf[left_key].isin(matched_left_keys)]
+
+        # for any missing, assign nearest cell
+        if len(missing_rows):
+            logger.info(f"{len(missing_rows)} rows lack overlap; assigning nearest cell")
+            nearest = gpd.sjoin_nearest(
+                missing_rows[[left_key, "geometry"]],
+                other_gdf[[right_key, "geometry"]],
+                how="left",
+            )
+            # combine overlap and nearest
+            joined = pd.concat([joined[[left_key, right_key]], nearest[[left_key, right_key]]], ignore_index=True)
+
+    gdf = gdf.drop(columns="poly_area").set_index(left_key)
+    gdf = gdf.join(joined.set_index(left_key)[[right_key]], how="left")
+
+    invalid = gdf[right_key].isna()
+    gdf.loc[invalid, right_key] = -1
+    gdf[right_key] = gdf[right_key].astype(int)
+    gdf = gdf.to_crs(equal_area_crs)
+
+    return gdf.reset_index()

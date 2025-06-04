@@ -17,7 +17,7 @@ import click
 import geopandas as gpd
 import numpy as np
 import rasterio
-from pyhdf.SD import SD, SDC
+from pyhdf.SD import SD, SDC  # type: ignore
 from rasterio.transform import rowcol
 from tqdm import tqdm
 

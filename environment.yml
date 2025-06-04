@@ -37,6 +37,7 @@ dependencies:
   - pytmd
   - earthengine-api
   - earthaccess
+  - pvlib-python
   # Plotting
   - seaborn
   - matplotlib

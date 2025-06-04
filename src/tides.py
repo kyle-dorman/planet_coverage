@@ -11,6 +11,16 @@ from timescale.time import convert_datetime
 logger = logging.getLogger(__name__)
 
 
+def clean_latlon(latlon: np.ndarray) -> np.ndarray:
+    latlon = latlon.astype(np.float64)
+    if len(latlon.shape) == 1:
+        latlon = latlon[None]
+    lt1 = np.nonzero(latlon[:, 1] < 0)
+    latlon[:, 1][lt1] += 360.0
+
+    return latlon
+
+
 def find_nearest_coordinate(latlon: np.ndarray, mask: np.ndarray, yi: np.ndarray, xi: np.ndarray) -> np.ndarray:
     """
     Find the closest coordinate from a mask of valid coordinates.
@@ -65,7 +75,7 @@ class TideModel:
 
         Args:
             latlon (np.ndarray): Target latitude, longitude as list (N, 2)
-            times (listlist[[datetime]]): List of datetimes to process (M, m)
+            times (listlist[[datetime]]): List of datetimes to process (N, m)
             samples (int, optional): Number of intorpolation samples. Defaults to 10.
 
         Returns:
@@ -91,12 +101,7 @@ class TideModel:
         return outs
 
     def find_best_coordinates(self, latlon: np.ndarray, samples: int = 10) -> np.ndarray:
-        latlon = latlon.astype(np.float64)
-        if len(latlon.shape) == 1:
-            latlon = latlon[None]
-        lt1 = np.nonzero(latlon[:, 1] < 0)
-        latlon[:, 1][lt1] += 360.0
-
+        latlon = clean_latlon(latlon)
         latlon_close = find_nearest_coordinate(latlon, self.mz, self.yi, self.xi)
         yxs = np.linspace(latlon, 2 * latlon_close - latlon, samples)
         S, N, _ = yxs.shape
@@ -131,51 +136,3 @@ def tide_model(model_directory: Path | None, model_name: str, model_format: str)
     model = pyTMD.io.model(model_directory, format=model_format).elevation(model_name)
 
     return TideModel(model, model_directory, model_name)
-
-
-if __name__ == "__main__":
-    import geopandas as gpd
-    from pyproj import Transformer
-    from shapely.ops import transform
-
-    BASE = Path("/Users/kyledorman/data/planet_coverage/ca_only_testing")  # <-- update this
-    GRID_ID = 31565
-
-    ca_ocean = gpd.read_file(BASE / "ca_ocean.geojson")
-    all_grids_df = gpd.read_file(BASE / "ocean_grids.gpkg").to_crs(ca_ocean.crs)  # type: ignore
-
-    grid_df = all_grids_df[all_grids_df.cell_id == GRID_ID]
-
-    # define start and end as numpy datetime64 objects
-    start = np.datetime64("2023-12-01T00:00")
-    end = np.datetime64("2024-12-01T00:00")
-    minutes = np.arange(start, end, np.timedelta64(1, "m"))
-
-    tm = tide_model(Path("/Users/kyledorman/data/tides"), "GOT4.10", "GOT")
-    assert tm is not None
-
-    all_tides = []
-
-    local_crs = grid_df.estimate_utm_crs()
-    grid_point_local = grid_df.to_crs(local_crs).geometry.iloc[0].centroid  # type: ignore
-    transformer = Transformer.from_crs(local_crs, grid_df.crs, always_xy=True)
-
-    # 2. Write a small wrapper that matches the shapely.ops.transform signature
-    def project(x, y, z=None):
-        # pyproj returns (x2, y2) or (x2, y2, z2) depending on input
-        if z is None:
-            x2, y2 = transformer.transform(x, y)
-            return x2, y2
-        else:
-            x2, y2, z2 = transformer.transform(x, y, z)
-            return x2, y2, z2
-
-    # 4. Apply the projection
-    grid_point = transform(project, grid_point_local)
-    latlons = np.array([grid_point.y, grid_point.x])
-
-    # generate every minute between start (inclusive) and end (exclusive)
-    minutes = np.arange(start, end, np.timedelta64(1, "m"))
-    tides_year = tm.tide_elevations(latlons, times=[minutes])[0]  # type: ignore
-
-    np.save("extracted/tides_2023.npy", tides_year)
