@@ -86,41 +86,10 @@ def join_query_cells_to_grid(query_gdf: gpd.GeoDataFrame, grid_gdf: gpd.GeoDataF
     else:
         joined = joined_overlap
 
+    joined.loc[joined.cell_id.isna(), "cell_id"] = -1
+    joined["cell_id"] = joined["cell_id"].astype(int)
+
     return joined
-
-
-def iter_grid_batches(joined: gpd.GeoDataFrame, chunk_size: int) -> Iterator[list[int]]:
-    """
-    Yield batches of ``grid_id`` values grouped by their ``cell_id``.
-    Each batch contains **all** ``grid_id`` members of one or more ``cell_id`` groups
-    and aims for roughly ``chunk_size`` total grid‑ids.
-    If a single ``cell_id`` has more than ``chunk_size`` grid‑ids we still yield all
-    of them together so that the relationship is preserved.
-    """
-    seen_grid_ids = set()
-    # Create mapping: cell_id -> list[grid_id]
-    cell_to_grids = joined.groupby("cell_id")["grid_id"].apply(list).sort_index()  # ensure deterministic order
-
-    batch: list[int] = []
-    for grids in tqdm(cell_to_grids.values):
-        grids = [gid for gid in grids if gid not in seen_grid_ids]
-        seen_grid_ids.update(grids)
-
-        # If starting a new batch, just take the grids
-        if not batch:
-            batch.extend(grids)
-        else:
-            # If adding the next cell's grids would exceed the target size,
-            # emit the current batch first.
-            if len(batch) + len(grids) > chunk_size:
-                yield batch
-                batch = grids
-            else:
-                batch.extend(grids)
-
-    # Emit any remainder
-    if batch:
-        yield batch
 
 
 # helper so we can use imap_unordered and keep tqdm progress
@@ -374,14 +343,19 @@ def main(
     query_gdf = query_gdf.to_crs("EPSG:4326").set_index("cell_id")[["geometry"]]
     height_edges = tide_heuristics_df.set_index("cell_id").filter(like="height_edge_").reindex(labels=all_cell_ids)
 
-    logger.info(f"Creating task batches (~{chunk_size} grid_ids each, grouped by cell_id)")
+    logger.info("Creating task batches grouped by cell_id)")
     tasks = []
-    for batch_idx, batch_grid_idxes in enumerate(iter_grid_batches(joined.reset_index(), chunk_size=chunk_size)):
+    to_run = joined.reset_index().sort_values(by=["cell_id", "grid_id"]).groupby("cell_id").grid_id.apply(list)
+    seen = set()
+    for cell_id, grid_ids in tqdm(to_run.items(), total=len(to_run)):
+        cell_id = int(cell_id)  # type: ignore
+        grid_ids = [gid for gid in grid_ids if gid not in seen]
+        seen.update(grid_ids)
         # select cell_ids via grid_id lookup
-        cell_ids = joined.loc[batch_grid_idxes].cell_id.unique()
+        cell_ids = joined.loc[grid_ids].cell_id.unique()
         lazy_df = all_lazy.filter(pl.col("cell_id").is_in(cell_ids))
         # select coastal rows via index lookup
-        coastal_batch = gdf_coastal.loc[batch_grid_idxes]
+        coastal_batch = gdf_coastal.loc[grid_ids]
         # create tasks to run
         tasks.append(
             (
@@ -389,7 +363,7 @@ def main(
                 coastal_batch.reset_index(),
                 lazy_df,
                 height_edges,
-                get_save_path(save_dir, batch_idx),
+                get_save_path(save_dir, cell_id),
                 tide_data_dir,
                 mid_tide_height,
                 coast_tidal_grid_mapper,

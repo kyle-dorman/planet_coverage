@@ -87,10 +87,13 @@ logger.info("Joined tide extremes with coastal grids: geo_tide has %d rows", len
 
 hex_tide = geo_tide.groupby("hex_id").agg(  # keep one row per hex_id
     min_phase_coverage=("phase_coverage", "min"),
+    max_phase_coverage=("phase_coverage", "max"),
     median_phase_coverage=("phase_coverage", "median"),
     min_obs_high_tide_offset=("obs_high_tide_offset", "min"),
+    max_obs_high_tide_offset=("obs_high_tide_offset", "max"),
     median_obs_high_tide_offset=("obs_high_tide_offset", "median"),
     min_obs_low_tide_offset=("obs_low_tide_offset", "min"),
+    max_obs_low_tide_offset=("obs_low_tide_offset", "max"),
     median_obs_low_tide_offset=("obs_low_tide_offset", "median"),
 )
 
@@ -108,6 +111,15 @@ plot_gdf_column(
     title="Minimum Phase Coverage",
     show_coastlines=True,
     save_path=str(FIG_DIR / "min_phase_coverage.png"),
+    show=False,
+)
+plot_gdf_column(
+    gdf,
+    "max_phase_coverage",
+    title="Maximum Phase Coverage",
+    show_coastlines=True,
+    save_path=str(FIG_DIR / "max_phase_coverage.png"),
+    show=False,
 )
 plot_gdf_column(
     gdf,
@@ -115,6 +127,7 @@ plot_gdf_column(
     title="Median Phase Coverage",
     show_coastlines=True,
     save_path=str(FIG_DIR / "median_phase_coverage.png"),
+    show=False,
 )
 
 # plot_gdf_column(
@@ -124,12 +137,20 @@ plot_gdf_column(
 #     show_coastlines=True,
 #     save_path=str(FIG_DIR / "min_obs_high_tide_offset.png"),
 # )
+# plot_gdf_column(
+#     gdf,
+#     "max_obs_high_tide_offset",
+#     title="Maximum High Tide Offset",
+#     show_coastlines=True,
+#     save_path=str(FIG_DIR / "max_obs_high_tide_offset.png"),
+# )
 plot_gdf_column(
     gdf,
     "median_obs_high_tide_offset",
     title="Median High Tide Offset",
     show_coastlines=True,
     save_path=str(FIG_DIR / "median_obs_high_tide_offset.png"),
+    show=False,
 )
 
 # plot_gdf_column(
@@ -139,10 +160,18 @@ plot_gdf_column(
 #     show_coastlines=True,
 #     save_path=str(FIG_DIR / "min_obs_low_tide_offset.png"),
 # )
+# plot_gdf_column(
+#     gdf,
+#     "max_obs_low_tide_offset",
+#     title="Maximum Low Tide Offset",
+#     show_coastlines=True,
+#     save_path=str(FIG_DIR / "max_obs_low_tide_offset.png"),
+# )
 plot_gdf_column(
     gdf,
     "median_obs_low_tide_offset",
     title="Median Low Tide Offset",
     show_coastlines=True,
     save_path=str(FIG_DIR / "median_obs_low_tide_offset.png"),
+    show=False,
 )

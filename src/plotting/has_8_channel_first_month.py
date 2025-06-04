@@ -52,11 +52,72 @@ logger.info("Registered DuckDB view 'samples_all'")
 query = """
 SELECT
     grid_id,
+    -- first date of 8-channel sample
+    MIN(acquired)
+        FILTER (WHERE has_8_channel)        AS first_8,
+
+    -- last date of 4-channel sample
+    MAX(acquired)
+        FILTER (WHERE NOT has_8_channel)    AS last_4,
+
+    -- first + last of *any* sample (after filter)
+    MIN(acquired)                           AS first_any,
+    MAX(acquired)                           AS last_any,
+    COUNT(*)                                AS sample_count,
+FROM samples_all
+WHERE
+    item_type        = 'PSScene'
+    AND coverage_pct     > 0.5
+    AND publishing_stage = 'finalized'
+    AND quality_category = 'standard'
+    AND ground_control
+GROUP BY grid_id
+"""
+
+df = con.execute(query).fetchdf().set_index("grid_id")
+df = grids_df.join(df[df.sample_count > 1], how="left").dropna(subset=["first_any"])
+
+logger.info("Queried first/last 4/8 channel samples")
+
+agg = df.groupby("hex_id").agg(first_sample_8_channel=("first_8", "min")).dropna()
+agg = agg[agg.index >= 0].join(hex_grid[["geometry"]], how="inner")
+gdf = gpd.GeoDataFrame(agg, geometry="geometry")
+
+plot_gdf_column(
+    gdf,
+    "first_sample_8_channel",
+    title="Date of first 8 channel sample",
+    show_coastlines=True,
+    save_path=FIG_DIR / "first_sample_8_channel.png",
+    show=True,
+)
+agg = df[df.last_4 > df.first_8.min()].groupby("hex_id").agg(last_sample_4_channel=("last_4", "max")).dropna()
+agg = agg[agg.index >= 0].join(hex_grid[["geometry"]], how="inner")
+gdf = gpd.GeoDataFrame(agg, geometry="geometry")
+
+plot_gdf_column(
+    gdf,
+    "last_sample_4_channel",
+    title="Date of last 4 channel sample",
+    show_coastlines=True,
+    save_path=FIG_DIR / "last_sample_4_channel.png",
+)
+
+assert False
+
+
+query = """
+SELECT
+    grid_id,
     COUNT_IF(has_8_channel) AS count_8_channel,
     COUNT_IF(NOT has_8_channel) AS count_4_channel,
     COUNT(*) AS sample_count,
 FROM samples_all
 WHERE item_type = 'PSScene'
+    AND coverage_pct     > 0.5
+    AND publishing_stage = 'finalized'
+    AND quality_category = 'standard'
+    AND ground_control
 GROUP BY grid_id
 """
 
@@ -67,6 +128,8 @@ logger.info("Queried 4/8 channel samples")
 
 hex_df["has_4_channel_no_8"] = (hex_df.count_4_channel > 0) & (hex_df.count_8_channel == 0)
 hex_df["has_8_channel_no_4"] = (hex_df.count_8_channel > 0) & (hex_df.count_4_channel == 0)
+
+only_8_channel_grid_ids = hex_df[hex_df.has_8_channel_no_4].index
 
 agg = hex_df.groupby("hex_id").agg(
     has_4_channel_no_8=("has_4_channel_no_8", "any"),
@@ -113,6 +176,9 @@ WITH bounds_raw AS (  ----------------------------------------------------------
     WHERE
           item_type        = 'PSScene'
       AND coverage_pct     > 0.5
+      AND publishing_stage = 'finalized'
+      AND quality_category = 'standard'
+      AND ground_control
     GROUP BY grid_id
 ),
 

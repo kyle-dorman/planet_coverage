@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -81,7 +82,7 @@ def plot_gdf_column(
     show_grid: bool = False,
     title: Optional[str] = None,
     save_path: str | Path | None = None,
-    show: bool = True,
+    show: bool = False,
     pad_fraction: float = 0.05,  # extra space around data bounds
 ) -> None:
     """
@@ -161,7 +162,10 @@ def plot_gdf_column(
         dx = dy = max(dx, dy) or 1.0  # give it 1° span to avoid zero-width
     pad_x = dx * pad_fraction
     pad_y = dy * pad_fraction
-    ax.set_extent([xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y], crs=ccrs.PlateCarree())  # type: ignore
+    ax.set_extent(
+        [max(-180, xmin - pad_x), min(180, xmax + pad_x), max(-90, ymin - pad_y), min(90, ymax + pad_y)],
+        crs=ccrs.PlateCarree(),
+    )  # type: ignore
 
     # ------------------------------------------------------------------
     # Plot data
@@ -198,4 +202,256 @@ def plot_gdf_column(
     if show:
         plt.show()
 
-    plt.close()
+    plt.close(fig)
+
+
+def make_time_between_query(year: int, pct: int, valid_only: bool, extra_filter: str | None = None) -> str:
+    """
+    Build the fiscal-year query for a single 12-month window.
+    """
+
+    # ------------------------------------------------------------------
+    # Compute end date = start + 1 year  (no extra deps needed)
+    # ------------------------------------------------------------------
+    start_dt = datetime(year, 12, 1).date()
+    end_dt = start_dt.replace(year=start_dt.year + 1)
+    end_date = end_dt.isoformat()
+    start_date = start_dt.isoformat()
+
+    valid_filter = (
+        """
+        AND publishing_stage = 'finalized'
+        AND quality_category = 'standard'
+        AND clear_percent    > 75.0
+        AND has_sr_asset
+        AND ground_control
+    """
+        if valid_only
+        else ""
+    )
+    if extra_filter is None:
+        extra_filter = ""
+
+    return f"""
+    WITH ordered AS (                       -- 1️⃣  rows in time order
+        SELECT
+            grid_id,
+            acquired,
+            EXTRACT(epoch FROM acquired) AS ts          -- seconds-since-epoch
+        FROM samples_all
+        WHERE
+            item_type    = 'PSScene'
+        AND coverage_pct > 0.5
+        AND acquired BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+        {valid_filter}
+        {extra_filter}
+    ),
+
+    deltas AS (                           -- 2️⃣  Δt between consecutive samples
+        SELECT
+            grid_id,
+            (ts - LAG(ts) OVER (PARTITION BY grid_id
+                                ORDER BY ts)) / 86400.0    AS days_between
+        FROM ordered
+    ),
+
+    filtered AS (                         -- 3️⃣  keep only gaps ≥ 12 h
+        SELECT grid_id, days_between
+        FROM deltas
+        WHERE days_between >= 0.5
+    )
+
+    -- 4️⃣  pct per grid
+    SELECT
+        grid_id,
+        quantile_cont(days_between, 0.{pct}) AS p{pct}_days_between
+    FROM filtered
+    WHERE days_between IS NOT NULL
+    GROUP BY grid_id
+    ORDER BY grid_id;
+    """
+
+
+# ----------------------------------------------------------------------
+# Query to count number of days with multiple captures per grid_id
+# ----------------------------------------------------------------------
+def make_multiple_captures_query(year: int, valid_only: bool = False) -> str:
+    """
+    Create a DuckDB query that counts the number of days with multiple captures per grid_id.
+
+    Parameters
+    ----------
+    valid_only : bool
+        If True, apply additional quality filters.
+    """
+    # ------------------------------------------------------------------
+    # Compute end date = start + 1 year  (no extra deps needed)
+    # ------------------------------------------------------------------
+    start_dt = datetime(year, 12, 1).date()
+    end_dt = start_dt.replace(year=start_dt.year + 1)
+    end_date = end_dt.isoformat()
+    start_date = start_dt.isoformat()
+
+    valid_filter = (
+        """
+        AND publishing_stage = 'finalized'
+        AND quality_category = 'standard'
+        AND clear_percent    > 75.0
+        AND has_sr_asset
+        AND ground_control
+        """
+        if valid_only
+        else ""
+    )
+
+    return f"""
+    WITH filtered AS (
+        SELECT
+            grid_id,
+            DATE_TRUNC('day', acquired) AS day
+        FROM samples_all
+        WHERE
+            acquired >= TIMESTAMP '{start_date}'
+            AND acquired < TIMESTAMP '{end_date}'
+            AND item_type = 'PSScene'
+            AND coverage_pct > 0.5
+            {valid_filter}
+    ),
+
+    grouped AS (
+        SELECT grid_id, day, COUNT(*) AS count
+        FROM filtered
+        GROUP BY grid_id, day
+        HAVING COUNT(*) > 1
+    )
+
+    SELECT grid_id, COUNT(*) AS multi_capture_days
+    FROM grouped
+    GROUP BY grid_id
+    ORDER BY grid_id;
+    """
+
+
+# ----------------------------------------------------------------------
+# Query to count number of high-frequency samples per grid_id
+# ----------------------------------------------------------------------
+def make_high_frequency_query(year: int, freq_minutes: int, valid_only: bool = False) -> str:
+    """
+    Create a DuckDB query that counts the number of high-frequency samples (Δt <= freq_minutes)
+    within a given date range.
+
+    Parameters
+    ----------
+    freq_minutes : int
+        Maximum time difference between samples in minutes to be considered "high frequency".
+    valid_only : bool
+        If True, apply quality filters.
+    """
+    # ------------------------------------------------------------------
+    # Compute end date = start + 1 year  (no extra deps needed)
+    # ------------------------------------------------------------------
+    start_dt = datetime(year, 12, 1).date()
+    end_dt = start_dt.replace(year=start_dt.year + 1)
+    end_date = end_dt.isoformat()
+    start_date = start_dt.isoformat()
+
+    freq_days = freq_minutes / (60 * 24)  # convert to days
+
+    valid_filter = (
+        """
+        AND publishing_stage = 'finalized'
+        AND quality_category = 'standard'
+        AND clear_percent    > 75.0
+        AND has_sr_asset
+        AND ground_control
+        """
+        if valid_only
+        else ""
+    )
+
+    return f"""
+    WITH ordered AS (
+        SELECT
+            grid_id,
+            EXTRACT(epoch FROM acquired) AS ts
+        FROM samples_all
+        WHERE
+            acquired >= TIMESTAMP '{start_date}'
+            AND acquired < TIMESTAMP '{end_date}'
+            AND item_type = 'PSScene'
+            AND coverage_pct > 0.5
+            {valid_filter}
+    ),
+
+    deltas AS (
+        SELECT
+            grid_id,
+            (ts - LAG(ts) OVER (PARTITION BY grid_id ORDER BY ts)) / 86400.0 AS delta_days
+        FROM ordered
+    )
+
+    SELECT
+        grid_id,
+        COUNT(*) AS high_freq_count
+    FROM deltas
+    WHERE delta_days IS NOT NULL AND delta_days <= {freq_days}
+    GROUP BY grid_id
+    ORDER BY grid_id;
+    """
+
+
+# ----------------------------------------------------------------------
+# Query to compute max number of captures in a single day per grid_id
+# ----------------------------------------------------------------------
+def make_max_daily_captures_query(year: int, valid_only: bool = False) -> str:
+    """
+    Create a DuckDB query that computes the maximum number of captures
+    in a single day per grid_id.
+
+    Parameters
+    ----------
+    year : int
+        The starting fiscal year (beginning December 1st of that year).
+    valid_only : bool
+        If True, apply quality filters.
+    """
+    start_dt = datetime(year, 12, 1).date()
+    end_dt = start_dt.replace(year=start_dt.year + 1)
+    start_date = start_dt.isoformat()
+    end_date = end_dt.isoformat()
+
+    valid_filter = (
+        """
+        AND publishing_stage = 'finalized'
+        AND quality_category = 'standard'
+        AND clear_percent    > 75.0
+        AND has_sr_asset
+        AND ground_control
+        """
+        if valid_only
+        else ""
+    )
+
+    return f"""
+    WITH daily_counts AS (
+        SELECT
+            grid_id,
+            DATE_TRUNC('day', acquired) AS sample_day,
+            COUNT(*) AS daily_count
+        FROM samples_all
+        WHERE
+            acquired >= TIMESTAMP '{start_date}'
+            AND acquired < TIMESTAMP '{end_date}'
+            AND item_type = 'PSScene'
+            AND coverage_pct > 0.5
+            {valid_filter}
+        GROUP BY grid_id, sample_day
+    )
+
+    SELECT
+        grid_id,
+        MAX(daily_count) AS max_daily_captures
+    FROM daily_counts
+    GROUP BY grid_id
+    ORDER BY grid_id;
+    """
