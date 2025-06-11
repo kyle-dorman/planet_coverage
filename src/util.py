@@ -1,13 +1,9 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-import geopandas as gpd
-import numpy as np
 from omegaconf import OmegaConf
-from shapely.geometry import MultiPoint, Point, Polygon, mapping
 
 from src.config import QueryConfig, validate_config
 
@@ -98,87 +94,3 @@ def create_config(config_file: Path) -> QueryConfig:
     OmegaConf.save(config, config.save_dir / "config.yaml")
 
     return config
-
-
-def has_crs(geojson_path: Path) -> None:
-    """Verify geojson file has a CRS
-
-    Args:
-        geojson_path (Path): _description_
-    """
-    gdf = gpd.read_file(geojson_path)
-    assert gdf.crs is not None, "{} is missing a CRS"
-
-
-def is_within_n_days(target_date: datetime, date_list: Iterable[datetime], n_days: int) -> bool:
-    """
-    Returns True if target_date is within n_days of any date in date_list.
-
-    Args:
-        target_date (datetime): The date to compare.
-        date_list (list of datetime): List of other dates.
-        n_days (int): Number of days as threshold.
-
-    Returns:
-        bool: True if within n_days of any date in the list.
-    """
-    return any(abs(target_date - dt) <= timedelta(days=n_days) for dt in date_list)
-
-
-def polygon_to_geojson_dict(polygon: Polygon | Point | MultiPoint, properties: dict | None = None) -> dict:
-    """
-    Wrap a single Shapely Polygon into a GeoJSON-like dict
-    that geopandas.read_file or GeoDataFrame.from_features can consume.
-    """
-    if properties is None:
-        properties = {}
-
-    return {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": properties,
-                "geometry": mapping(polygon),
-            }
-        ],
-    }
-
-
-def make_cell_geom(pt_list: list[Point]) -> Point | MultiPoint:
-    if len(pt_list) == 1:
-        # only one point → keep it
-        return pt_list[0]
-    else:
-        # many points → MultiPoint
-        return MultiPoint([p.coords[0] for p in pt_list])
-
-
-def create_cells_df(points_df: gpd.GeoDataFrame, config: QueryConfig) -> gpd.GeoDataFrame:
-    # convert to new crs
-    gdf = points_df.to_crs("EPSG:4326").copy()
-
-    # Prepare for groupings
-    degree_size = config.degree_size
-    gdf["lon_bin"] = (np.floor(gdf.geometry.x / degree_size) * degree_size).astype(float)
-    gdf["lat_bin"] = (np.floor(gdf.geometry.y / degree_size) * degree_size).astype(float)
-
-    # ----------------------------------------------------------------------------
-    # 1) group by cell and collect both points AND their original indices
-    # ----------------------------------------------------------------------------
-    grouped = (
-        gdf.groupby(["lon_bin", "lat_bin"])
-        .agg(
-            {
-                "geometry": list,  # list of Point geometries
-                "grid_id": list,  # list of grid point ids
-            }
-        )
-        .reset_index()
-    )
-    # replace the list‐of‐points with the single Point (or MultiPoint):
-    grouped["geometry"] = grouped["geometry"].apply(make_cell_geom)  # type: ignore
-    cells = gpd.GeoDataFrame(grouped, geometry="geometry", crs="EPSG:4326")
-    cells["cell_id"] = cells.index
-
-    return cells

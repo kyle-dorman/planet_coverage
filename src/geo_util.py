@@ -7,15 +7,36 @@ import polars as pl
 import shapely
 from branca.colormap import linear
 from pyproj import CRS
-from shapely import wkb
+from shapely import MultiPoint, Point, Polygon, wkb
+from shapely.geometry import mapping
 
 logger = logging.getLogger(__name__)
+
+
+def polygon_to_geojson_dict(polygon: Polygon | Point | MultiPoint, properties: dict | None = None) -> dict:
+    """
+    Wrap a single Shapely Polygon into a GeoJSON-like dict
+    that geopandas.read_file or GeoDataFrame.from_features can consume.
+    """
+    if properties is None:
+        properties = {}
+
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": properties,
+                "geometry": mapping(polygon),
+            }
+        ],
+    }
 
 
 def clean_invalid(df: gpd.GeoDataFrame):
     # Clean invalid geometries inplace
     invalid = ~df.geometry.is_valid
-    df.loc[invalid, "geometry"] = df.geometry[invalid].apply(lambda geom: shapely.make_valid(geom))
+    df.loc[invalid, "geometry"] = df.geometry[invalid].make_valid()
     invalid = ~df.geometry.is_valid
     df.loc[invalid, "geometry"] = df.geometry[invalid].buffer(0)
 
@@ -31,12 +52,15 @@ def preprocess_geometry(
     """
     assert not df.geometry.is_empty.any()
 
-    # Project
-    df = df.to_crs(proj_crs)
-
     # Remove GeometryCollection types
     non_polygon = df.geometry.geom_type == "GeometryCollection"
     df.loc[non_polygon, "geometry"] = df.geometry[non_polygon].buffer(0)
+
+    # Clean
+    clean_invalid(df)
+
+    # Project
+    df = df.to_crs(proj_crs)
 
     # Clean
     clean_invalid(df)
@@ -46,6 +70,7 @@ def preprocess_geometry(
 
     # Clean
     clean_invalid(df)
+
     return df
 
 
@@ -205,18 +230,15 @@ def assign_intersection_id(
     other_gdf: gpd.GeoDataFrame,
     left_key: str,
     right_key: str,
-    equal_area_crs: str,
     include_closest: bool = False,
 ) -> gpd.GeoDataFrame:
-    assert gdf.crs == equal_area_crs
+    assert gdf.crs == other_gdf.crs
 
     gdf = gdf.copy()
     gdf["poly_area"] = gdf.geometry.area
-    gdf = gdf.to_crs(other_gdf.crs)  # type: ignore
 
     # Assign right_key to gdf
     joined = gdf[[left_key, "geometry", "poly_area"]].overlay(other_gdf[[right_key, "geometry"]], how="intersection")
-    joined = joined.to_crs(equal_area_crs)
     joined["overlap_pct"] = joined.geometry.area / joined.poly_area
     joined = joined.sort_values(by=[left_key, "overlap_pct"], ascending=[True, False])
     joined = joined.drop_duplicates(subset=left_key)
@@ -242,6 +264,5 @@ def assign_intersection_id(
     invalid = gdf[right_key].isna()
     gdf.loc[invalid, right_key] = -1
     gdf[right_key] = gdf[right_key].astype(int)
-    gdf = gdf.to_crs(equal_area_crs)
 
     return gdf.reset_index()

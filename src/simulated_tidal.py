@@ -266,13 +266,18 @@ def main(
     ocean_grids["centroid"] = ocean_grids.geometry.centroid
 
     coastline = gpd.read_file(Path(base_dir) / "coastal_strips.gpkg")
+    antarctica = gpd.read_file(Path(base_dir).parent / "shorelines/antarctica.geojson")
 
     assert coastline.crs == ocean_grids.crs
 
     logger.info("Spatial join to find coastal cells")
     coastal_ids = gpd.sjoin(ocean_grids[["cell_id", "geometry"]], coastline[["geometry"]]).cell_id.unique()
+    antarctica_ids = gpd.sjoin(
+        ocean_grids.to_crs(antarctica.crs)[["cell_id", "geometry"]], antarctica[["geometry"]]  # type: ignore
+    ).cell_id.unique()
+    ids = np.concatenate([coastal_ids, antarctica_ids])
     ocean_grids = ocean_grids.set_index("cell_id")
-    grid_df = ocean_grids.loc[coastal_ids, ["centroid"]].reset_index()
+    grid_df = ocean_grids.loc[ids, ["centroid"]].reset_index()
     transformer = Transformer.from_crs(ocean_grids.crs, "EPSG:4326", always_xy=True)
 
     # ------------------------------------------------------------------ #

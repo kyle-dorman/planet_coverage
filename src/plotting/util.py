@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
+import cartopy
 import cartopy.crs as ccrs
 import geopandas as gpd
 import matplotlib.dates as mdates
@@ -18,12 +19,22 @@ logger = logging.getLogger(__name__)
 
 
 def load_grids(base: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    query_df = gpd.read_file(base / "merged_ocean_grids.gpkg")
+    grids_df = gpd.read_file(base / "merged_coastal_grids.gpkg")
+    hex_grid = gpd.read_file(base / "merged_hex_grids.gpkg")
+
+    return query_df, grids_df, hex_grid
+
+
+def create_merged_grids(base: Path, shorelines: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
     display_crs = "EPSG:4326"
     robinson_crs = "ESRI:54030"
     sinus_crs = "ESRI:54008"
 
-    query_df = gpd.read_file(base / "ocean_grids.gpkg")
-    grids_df = gpd.read_file(base / "coastal_grids.gpkg").rename(columns={"cell_id": "grid_id"})
+    query_df = gpd.read_file(shorelines / "ocean_grids.gpkg")
+    grids_df = gpd.read_file(shorelines / "coastal_grids.gpkg").rename(columns={"cell_id": "grid_id"})
+    assert query_df.crs == sinus_crs
+    assert grids_df.crs == sinus_crs
     heuristics_df = pd.read_csv(base / "simulated_tidal_coverage_heuristics.csv").set_index("cell_id")
 
     logger.info(
@@ -35,16 +46,17 @@ def load_grids(base: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoD
 
     cell_size_m = compute_step(1.5)
     _, hex_grid = make_equal_area_hex_grid(cell_size_m, robinson_crs)
-    hex_grid = hex_grid.rename(columns={"cell_id": "hex_id"}).to_crs(display_crs)
+    hex_grid = hex_grid.to_crs(sinus_crs)
+    hex_grid = hex_grid.rename(columns={"cell_id": "hex_id"})
 
     logger.info("Generated %d equal‑area hexagons", len(hex_grid))
 
     # Assign hex_id to query_df and grid_df
-    grids_df = assign_intersection_id(grids_df, hex_grid, "grid_id", "hex_id", sinus_crs)
-    query_df = assign_intersection_id(query_df, hex_grid, "cell_id", "hex_id", sinus_crs)
+    grids_df = assign_intersection_id(grids_df, hex_grid, "grid_id", "hex_id")
+    query_df = assign_intersection_id(query_df, hex_grid, "cell_id", "hex_id")
 
     # Assign cell_id to grid_df
-    grids_df = assign_intersection_id(grids_df, query_df, "grid_id", "cell_id", sinus_crs)
+    grids_df = assign_intersection_id(grids_df, query_df, "grid_id", "cell_id")
 
     logger.info("Finished spatial ID assignments (hex_id ↔ grid_id ↔ cell_id)")
 
@@ -57,6 +69,7 @@ def load_grids(base: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoD
     # Set plot crs
     query_df = query_df.to_crs(display_crs)
     grids_df = grids_df.to_crs(display_crs)
+    hex_grid = hex_grid.to_crs(display_crs)
 
     # Set indexes
     query_df = query_df.set_index("cell_id")
@@ -79,18 +92,26 @@ def plot_gdf_column(
     edgecolor: str = "black",
     linewidth: float = 0.15,
     show_coastlines: bool = False,
+    show_land_ocean: bool = False,
     show_grid: bool = False,
     title: Optional[str] = None,
     save_path: str | Path | None = None,
     show: bool = False,
     pad_fraction: float = 0.05,  # extra space around data bounds
+    filter_bounds: bool = False,
+    ax: plt.Axes | None = None,  # existing axis → no per‑plot legend
 ) -> None:
     """
     Plot a numeric column from a GeoDataFrame on a Cartopy map, zooming to the
     area where data exist.
 
+    If an existing Matplotlib Axes is supplied via `ax`, the function draws on that axis and skips adding a per‑plot colour bar so you can create a shared legend later.
+
     `pad_fraction` adds a percentage of the data extent as padding so the data
     don’t touch the frame edge.
+
+    For ``scale="log"``, features whose value is ``<= 0`` are plotted in gray so
+    they remain visible without breaking the logarithmic colour mapping.
     """
     # ------------------------------------------------------------------
     # Basic checks
@@ -134,15 +155,24 @@ def plot_gdf_column(
 
         formatter = ticker.FuncFormatter(_fmt)
         locator = ticker.MaxNLocator(nbins=6)  # or mdates.MonthLocator()
+        positive_mask = np.ones_like(data, dtype=bool)  # all True for datetime
     else:
-        # keep your linear / log branch as-is
         if scale == "log":
-            if (data <= 0).any():
-                raise ValueError("Log scale selected but column contains non-positive values.")
+            positive_mask = data > 0
+            if not positive_mask.any():
+                raise ValueError("Log scale selected but column contains no positive values.")
+
+            pos_vals = data[positive_mask]
+            if vmin is None or vmin <= 0:
+                vmin = pos_vals.min()
+            if vmax is None:
+                vmax = pos_vals.max()
+
             norm = colors.LogNorm(vmin=vmin, vmax=vmax)
             formatter = ticker.FuncFormatter(lambda y, _: f"{y:g}")
             locator = ticker.LogLocator(base=10, numticks=10)
         else:
+            positive_mask = np.ones_like(data, dtype=bool)  # all True for non‑log branch
             norm = colors.Normalize(vmin=vmin, vmax=vmax)
             formatter = ticker.ScalarFormatter()
             locator = ticker.MaxNLocator(nbins=6)
@@ -152,46 +182,85 @@ def plot_gdf_column(
     # ------------------------------------------------------------------
     # Prepare figure / axis
     # ------------------------------------------------------------------
-    fig = plt.figure(figsize=figsize)
-    ax = plt.axes(projection=projection)
+    if ax is None:
+        fig = plt.figure(figsize=figsize)
+        ax = plt.axes(projection=projection)
+        _add_colorbar = True
+    else:
+        fig = ax.figure
+        _add_colorbar = False  # caller will add a shared colorbar later
 
-    # Compute extent from data bounds (EPSG:4326) and add a small margin
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-    dx, dy = xmax - xmin, ymax - ymin
-    if dx == 0 or dy == 0:  # degenerate case (single point / line)
-        dx = dy = max(dx, dy) or 1.0  # give it 1° span to avoid zero-width
-    pad_x = dx * pad_fraction
-    pad_y = dy * pad_fraction
-    ax.set_extent(
-        [max(-180, xmin - pad_x), min(180, xmax + pad_x), max(-90, ymin - pad_y), min(90, ymax + pad_y)],
-        crs=ccrs.PlateCarree(),
-    )  # type: ignore
+    if filter_bounds:
+        # Compute extent from data bounds (EPSG:4326) and add a small margin
+        xmin, ymin, xmax, ymax = gdf.total_bounds
+        dx, dy = xmax - xmin, ymax - ymin
+        if dx == 0 or dy == 0:  # degenerate case (single point / line)
+            dx = dy = max(dx, dy) or 1.0  # give it 1° span to avoid zero-width
+        pad_x = dx * pad_fraction
+        pad_y = dy * pad_fraction
+        startx = max(-180, xmin - pad_x)
+        endx = min(180, xmax + pad_x)
+        starty = max(-90, ymin - pad_y)
+        endy = min(90, ymax + pad_y)
+        ax.set_extent([startx, endx, starty, endy], crs=ccrs.PlateCarree())  # type: ignore
+    else:
+        ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())  # type: ignore
 
     # ------------------------------------------------------------------
     # Plot data
     # ------------------------------------------------------------------
-    gdf.plot(
-        column=column,
-        cmap=cmap,
-        norm=norm,
-        ax=ax,
-        transform=ccrs.PlateCarree(),
-        edgecolor=edgecolor,
-        linewidth=linewidth,
-    )
+    if scale == "log":
+        gdf_pos = gdf.loc[positive_mask]
+        gdf_nonpos = gdf.loc[~positive_mask]
+
+        if not gdf_nonpos.empty:
+            gdf_nonpos.plot(
+                ax=ax,
+                color="lightgray",
+                transform=ccrs.PlateCarree(),
+                edgecolor=edgecolor,
+                linewidth=linewidth,
+                zorder=1,
+            )
+
+        if not gdf_pos.empty:
+            gdf_pos.plot(
+                column=column,
+                cmap=cmap,
+                norm=norm,
+                ax=ax,
+                transform=ccrs.PlateCarree(),
+                edgecolor=edgecolor,
+                linewidth=linewidth,
+                zorder=2,
+            )
+    else:
+        gdf.plot(
+            column=column,
+            cmap=cmap,
+            norm=norm,
+            ax=ax,
+            transform=ccrs.PlateCarree(),
+            edgecolor=edgecolor,
+            linewidth=linewidth,
+        )
 
     if show_coastlines:
         ax.coastlines(resolution="110m", linewidth=0.3)  # type: ignore
     if show_grid:
         ax.gridlines(draw_labels=False, linewidth=0.2)  # type: ignore
+    if show_land_ocean:
+        ax.add_feature(cartopy.feature.OCEAN, zorder=0)  # type: ignore
+        ax.add_feature(cartopy.feature.LAND, zorder=0)  # type: ignore
 
     # Colour bar
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax, orientation="vertical", shrink=0.65, pad=0.02, format=formatter)
-    cbar.locator = locator
-    cbar.update_ticks()
-    cbar.set_label(orig_column)
+    if _add_colorbar:
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, orientation="vertical", shrink=0.65, pad=0.02, format=formatter)
+        cbar.locator = locator
+        cbar.update_ticks()
+        cbar.set_label(orig_column)
 
     if title:
         ax.set_title(title, pad=12)
@@ -202,7 +271,8 @@ def plot_gdf_column(
     if show:
         plt.show()
 
-    plt.close(fig)
+    if _add_colorbar:
+        plt.close(fig)  # type: ignore
 
 
 def make_time_between_query(year: int, pct: int, valid_only: bool, extra_filter: str | None = None) -> str:

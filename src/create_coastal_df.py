@@ -2,7 +2,6 @@
 import logging
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from typing import Iterator
 
 import click
 import geopandas as gpd
@@ -43,7 +42,6 @@ SCHEMA = {
     "sun_azimuth": pl.Float32,
     "sun_elevation": pl.Float32,
     "view_angle": pl.Float32,
-    "geometry_wkb": pl.Binary,
     "intersects_grid_centroid": pl.Boolean,
     "coverage_pct": pl.Float32,
     "tide_height": pl.Float32,
@@ -113,7 +111,10 @@ def process_file(
     assert grid_gdf.grid_center is not None
     dest = out_dir / "coastal_points.parquet"
     if dest.exists():
-        return
+        import os
+
+        os.remove(dest)
+        # return
 
     count_df = planet_df.select(pl.len().alias("n_rows")).collect()
     n_rows = count_df["n_rows"][0]
@@ -181,12 +182,6 @@ def process_file(
     assert joined.grid_center.isna().sum() == 0
     joined["intersects_grid_centroid"] = joined.intersects(joined.grid_center)  # type: ignore
 
-    # Map back to Planet crs
-    joined = joined.to_crs("EPSG:4326")
-
-    # Convert point geometry to wkb for saving (overwriting polygon wkb)
-    joined["geometry_wkb"] = joined.geometry.map(lambda geom: geom.wkb)
-
     # joined now has all columns from gdf + a `grid_id` and the index of the matched pt
     # Drop the extra index column that sjoin adds and the point geometry column
     joined = joined.drop(columns=["poly_area", "geometry", "grid_center"])
@@ -231,14 +226,6 @@ def process_file(
     help="Base directory to save results to",
 )
 @click.option(
-    "--chunk-size",
-    "-n",
-    type=int,
-    default=100,
-    show_default=True,
-    help="Number of distinct grid_ids to process per chunk",
-)
-@click.option(
     "--mid-tide-height",
     "-mth",
     type=float,
@@ -261,7 +248,6 @@ def main(
     tide_heuristics_path: Path,
     tide_data_dir: Path,
     save_dir: Path,
-    chunk_size: int,
     mid_tide_height: float,
     num_procs: int,
 ):
@@ -307,7 +293,6 @@ def main(
         query_gdf[["cell_id", "geometry"]],
         "grid_id",
         "cell_id",
-        "ESRI:54008",
         include_closest=True,
     )[["grid_id", "cell_id"]].set_index("grid_id")
 
