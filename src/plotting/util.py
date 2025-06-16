@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import cartopy
 import cartopy.crs as ccrs
@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 def load_grids(base: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
-    query_df = gpd.read_file(base / "merged_ocean_grids.gpkg")
-    grids_df = gpd.read_file(base / "merged_coastal_grids.gpkg")
-    hex_grid = gpd.read_file(base / "merged_hex_grids.gpkg")
+    query_df = gpd.read_file(base / "merged_ocean_grids.gpkg").set_index("cell_id")
+    grids_df = gpd.read_file(base / "merged_coastal_grids.gpkg").set_index("grid_id")
+    hex_grid = gpd.read_file(base / "merged_hex_grids.gpkg").set_index("hex_id")
 
     return query_df, grids_df, hex_grid
 
@@ -95,10 +95,12 @@ def plot_gdf_column(
     show_land_ocean: bool = False,
     show_grid: bool = False,
     title: Optional[str] = None,
+    use_cbar_label: bool = True,
     save_path: str | Path | None = None,
     show: bool = False,
     pad_fraction: float = 0.05,  # extra space around data bounds
     filter_bounds: bool = False,
+    add_color_bar: bool = True,
     ax: plt.Axes | None = None,  # existing axis → no per‑plot legend
 ) -> None:
     """
@@ -112,6 +114,7 @@ def plot_gdf_column(
 
     For ``scale="log"``, features whose value is ``<= 0`` are plotted in gray so
     they remain visible without breaking the logarithmic colour mapping.
+    Rows whose value is NaN are *always* plotted in gray.
     """
     # ------------------------------------------------------------------
     # Basic checks
@@ -132,22 +135,23 @@ def plot_gdf_column(
     else:
         numeric_vals = gdf[column].astype(float).values
 
-    gdf = gdf.copy()
+    gdf = gdf[[column, "geometry"]].copy()
     gdf["_tmp"] = numeric_vals  # temp numeric column
     column = "_tmp"
 
     data = gdf[column].astype(float)
+    nan_mask = np.isnan(data)
 
     # ------------------------------------------------------------------
     # Colour range & normalisation
     # ------------------------------------------------------------------
     if vmin is None:
-        vmin = data[data > 0].min() if scale == "log" else data.min()
+        vmin = np.nanmin(data[data > 0]) if scale == "log" else np.nanmin(data)
     if vmax is None:
-        vmax = data.max()
+        vmax = np.nanmax(data)
 
     if is_datetime:
-        norm = colors.Normalize(vmin=numeric_vals.min(), vmax=numeric_vals.max())  # type: ignore
+        norm = colors.Normalize(vmin=np.nanmin(numeric_vals), vmax=np.nanmax(numeric_vals))  # type: ignore
 
         # human-readable ticks every N months
         def _fmt(x, _):
@@ -155,24 +159,18 @@ def plot_gdf_column(
 
         formatter = ticker.FuncFormatter(_fmt)
         locator = ticker.MaxNLocator(nbins=6)  # or mdates.MonthLocator()
-        positive_mask = np.ones_like(data, dtype=bool)  # all True for datetime
+        valid_mask = ~nan_mask  # all non-NaN for datetime
     else:
         if scale == "log":
-            positive_mask = data > 0
-            if not positive_mask.any():
+            valid_mask = (data > 0) & (~nan_mask)
+            if not valid_mask.any():
                 raise ValueError("Log scale selected but column contains no positive values.")
-
-            pos_vals = data[positive_mask]
-            if vmin is None or vmin <= 0:
-                vmin = pos_vals.min()
-            if vmax is None:
-                vmax = pos_vals.max()
 
             norm = colors.LogNorm(vmin=vmin, vmax=vmax)
             formatter = ticker.FuncFormatter(lambda y, _: f"{y:g}")
             locator = ticker.LogLocator(base=10, numticks=10)
         else:
-            positive_mask = np.ones_like(data, dtype=bool)  # all True for non‑log branch
+            valid_mask = ~nan_mask
             norm = colors.Normalize(vmin=vmin, vmax=vmax)
             formatter = ticker.ScalarFormatter()
             locator = ticker.MaxNLocator(nbins=6)
@@ -185,10 +183,10 @@ def plot_gdf_column(
     if ax is None:
         fig = plt.figure(figsize=figsize)
         ax = plt.axes(projection=projection)
-        _add_colorbar = True
+        provided_ax = False
     else:
         fig = ax.figure
-        _add_colorbar = False  # caller will add a shared colorbar later
+        provided_ax = True
 
     if filter_bounds:
         # Compute extent from data bounds (EPSG:4326) and add a small margin
@@ -210,11 +208,11 @@ def plot_gdf_column(
     # Plot data
     # ------------------------------------------------------------------
     if scale == "log":
-        gdf_pos = gdf.loc[positive_mask]
-        gdf_nonpos = gdf.loc[~positive_mask]
+        gdf_valid = gdf.loc[valid_mask]
+        gdf_invalid = gdf.loc[~valid_mask]  # ≤0 or NaN
 
-        if not gdf_nonpos.empty:
-            gdf_nonpos.plot(
+        if not gdf_invalid.empty:
+            gdf_invalid.plot(
                 ax=ax,
                 color="lightgray",
                 transform=ccrs.PlateCarree(),
@@ -223,8 +221,8 @@ def plot_gdf_column(
                 zorder=1,
             )
 
-        if not gdf_pos.empty:
-            gdf_pos.plot(
+        if not gdf_valid.empty:
+            gdf_valid.plot(
                 column=column,
                 cmap=cmap,
                 norm=norm,
@@ -235,15 +233,30 @@ def plot_gdf_column(
                 zorder=2,
             )
     else:
-        gdf.plot(
-            column=column,
-            cmap=cmap,
-            norm=norm,
-            ax=ax,
-            transform=ccrs.PlateCarree(),
-            edgecolor=edgecolor,
-            linewidth=linewidth,
-        )
+        gdf_nan = gdf.loc[nan_mask]
+        gdf_vals = gdf.loc[~nan_mask]
+
+        if not gdf_nan.empty:
+            gdf_nan.plot(
+                ax=ax,
+                color="lightgray",
+                transform=ccrs.PlateCarree(),
+                edgecolor=edgecolor,
+                linewidth=linewidth,
+                zorder=1,
+            )
+
+        if not gdf_vals.empty:
+            gdf_vals.plot(
+                column=column,
+                cmap=cmap,
+                norm=norm,
+                ax=ax,
+                transform=ccrs.PlateCarree(),
+                edgecolor=edgecolor,
+                linewidth=linewidth,
+                zorder=2,
+            )
 
     if show_coastlines:
         ax.coastlines(resolution="110m", linewidth=0.3)  # type: ignore
@@ -254,24 +267,24 @@ def plot_gdf_column(
         ax.add_feature(cartopy.feature.LAND, zorder=0)  # type: ignore
 
     # Colour bar
-    if _add_colorbar:
+    if add_color_bar:
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = fig.colorbar(sm, ax=ax, orientation="vertical", shrink=0.65, pad=0.02, format=formatter)
         cbar.locator = locator
         cbar.update_ticks()
-        cbar.set_label(orig_column)
+        if use_cbar_label:
+            cbar.set_label(orig_column)
 
     if title:
         ax.set_title(title, pad=12)
 
-    plt.tight_layout()
     if save_path is not None:
         plt.savefig(save_path)
     if show:
         plt.show()
 
-    if _add_colorbar:
+    if not provided_ax:
         plt.close(fig)  # type: ignore
 
 
@@ -524,4 +537,118 @@ def make_max_daily_captures_query(year: int, valid_only: bool = False) -> str:
     FROM daily_counts
     GROUP BY grid_id
     ORDER BY grid_id;
+    """
+
+
+# ----------------------------------------------------------------------
+# Query to build a per‑grid histogram of time‑between‑samples
+# ----------------------------------------------------------------------
+def make_time_between_hist_query(
+    year: int,
+    bins: Sequence[float],
+    *,
+    valid_only: bool = False,
+    max_hours: float = 24.0,
+) -> str:
+    """
+    Build a DuckDB query that returns **one row per grid_id**
+    with counts of time-between-amples falling into the supplied
+    ``bins``.  Bins are expressed in **days** (e.g. ``[0, 0.25, 0.5, 1.0]``),
+    are left-inclusive / right-exclusive, and must be strictly
+    increasing.
+
+    Parameters
+    ----------
+    year : int
+        Starting fiscal year (window is 1 yr from Dec 1 → Nov 30).
+    bins : Sequence[float]
+        Monotonically increasing bin edges in **days**.
+    valid_only : bool, default=False
+        Apply Planet quality filters if True.
+    max_hours : float, default=24.0
+        Discard Δt values larger than this (hours).
+
+    Returns
+    -------
+    str
+        DuckDB SQL that yields:
+
+        | grid_id | bin_0 | bin_1 | … |
+
+        where ``bin_k`` is the count for the k-th interval.
+    """
+    if len(bins) < 2:
+        raise ValueError("bins must have at least two edges")
+
+    # ------------------------------------------------------------------
+    # Date window
+    # ------------------------------------------------------------------
+    start_dt = datetime(year, 12, 1).date()
+    end_dt = start_dt.replace(year=start_dt.year + 1)
+    start_date = start_dt.isoformat()
+    end_date = end_dt.isoformat()
+
+    # ------------------------------------------------------------------
+    # Quality filter
+    # ------------------------------------------------------------------
+    valid_filter = (
+        """
+        AND s.publishing_stage = 'finalized'
+        AND s.quality_category = 'standard'
+        AND s.clear_percent    > 75.0
+        AND s.has_sr_asset
+        AND s.ground_control
+        """
+        if valid_only
+        else ""
+    )
+
+    # ------------------------------------------------------------------
+    # width_bucket edges  (DuckDB accepts LIST_VALUE(…))
+    # ------------------------------------------------------------------
+    edges_sql = "LIST_VALUE(" + ", ".join(f"{b}" for b in bins) + ")"
+    max_days = max_hours / 24.0
+
+    return f"""
+    WITH ordered AS (
+        SELECT
+            s.grid_id,
+            s.satellite_id,
+            EXTRACT(epoch FROM s.acquired) AS ts
+        FROM samples_all AS s
+        JOIN grid_ids_tbl USING (grid_id)
+        WHERE
+            s.acquired >= TIMESTAMP '{start_date}'
+            AND s.acquired <  TIMESTAMP '{end_date}'
+            AND s.item_type  = 'PSScene'
+            AND s.coverage_pct > 0.5
+            {valid_filter}
+    ),
+
+    deltas AS (
+        SELECT
+            grid_id,
+            CASE
+                WHEN satellite_id <> LAG(satellite_id) OVER (
+                        PARTITION BY grid_id
+                        ORDER BY     ts
+                    )
+                THEN
+                    (ts - LAG(ts) OVER (
+                            PARTITION BY grid_id
+                            ORDER BY     ts
+                    )) / 86400.0
+                ELSE NULL
+            END AS delta_days
+        FROM ordered
+    )
+
+    SELECT
+        histogram(
+            delta_days,
+            {edges_sql}
+        ) AS bucket
+    FROM deltas
+    WHERE delta_days IS NOT NULL
+    AND delta_days <= {max_days}
     """

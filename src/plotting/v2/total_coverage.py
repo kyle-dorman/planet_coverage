@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / BASE.name / "total_coverage"
+FIG_DIR = BASE.parent / "figs_v2" / "total_coverage"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # path patterns
@@ -58,8 +58,9 @@ query = """
         COUNT(*) AS sample_count,
     FROM samples_all
     WHERE
-        item_type = 'PSScene'
-        AND coverage_pct > 0.5
+        item_type           = 'PSScene'
+        AND coverage_pct    > 0.5
+        AND acquired        <  TIMESTAMP '2024-12-01'
     GROUP BY grid_id
 """
 
@@ -68,6 +69,8 @@ df = con.execute(query).fetchdf().set_index("grid_id")
 logger.info("Query finished")
 
 hex_df = grids_df.join(df, how="left").fillna({"sample_count": 0})
+# Filter Antartica that doesn't have any data
+hex_df = hex_df[hex_df.sample_count > 0 | ~hex_df.dist_km.isna()]
 
 logger.info("Plotting Counts")
 agg = hex_df.groupby("hex_id").agg(
@@ -95,4 +98,9 @@ plot_gdf_column(
     save_path=FIG_DIR / "max.png",
 )
 
-gdf.to_file(FIG_DIR / "data.shp")
+logger.info("Saving results to ShapeFile")
+(FIG_DIR / "hex_data").mkdir(exist_ok=True)
+gdf.to_file(FIG_DIR / "hex_data" / "data.shp")
+
+(FIG_DIR / "grid_data").mkdir(exist_ok=True)
+hex_df.to_file(FIG_DIR / "grid_data" / "data.shp")
