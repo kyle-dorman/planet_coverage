@@ -37,7 +37,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-valid = ~grids_df.is_land & (grids_df.dist_km.isna() | (grids_df.dist_km < MIN_DIST))
+valid = ~grids_df.is_land & grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -55,12 +55,13 @@ logger.info("Registered DuckDB view 'samples_all'")
 query = """
     SELECT
         grid_id,
-        COUNT(*) AS sample_count,
+        approx_count_distinct(id) AS sample_count,
     FROM samples_all
     WHERE
         item_type           = 'PSScene'
         AND coverage_pct    > 0.5
         AND acquired        <  TIMESTAMP '2024-12-01'
+        AND acquired        >  TIMESTAMP '2015-12-01'
     GROUP BY grid_id
 """
 
@@ -68,9 +69,7 @@ df = con.execute(query).fetchdf().set_index("grid_id")
 
 logger.info("Query finished")
 
-hex_df = grids_df.join(df, how="left").fillna({"sample_count": 0})
-# Filter Antartica that doesn't have any data
-hex_df = hex_df[hex_df.sample_count > 0 | ~hex_df.dist_km.isna()]
+hex_df = grids_df[["geometry", "hex_id", "dist_km"]].join(df, how="left")
 
 logger.info("Plotting Counts")
 agg = hex_df.groupby("hex_id").agg(
@@ -78,24 +77,17 @@ agg = hex_df.groupby("hex_id").agg(
     max_count=("sample_count", "max"),
 )
 agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
-gdf = gpd.GeoDataFrame(agg, geometry="geometry")
+gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
 plot_gdf_column(
     gdf,
     "median_count",
-    title="Sample Count (Agg: Median, 11/2015-6/2025)",
+    title="Sample Count (12/2015-12/2024)",
     show_land_ocean=True,
     scale="log",
     save_path=FIG_DIR / "median.png",
-)
-
-plot_gdf_column(
-    gdf[gdf.max_count > 0],
-    "max_count",
-    title="Sample Count (Agg: Max, 11/2015-6/2025)",
-    show_land_ocean=True,
-    scale="log",
-    save_path=FIG_DIR / "max.png",
+    vmin=10,
+    use_cbar_label=False,
 )
 
 logger.info("Saving results to ShapeFile")
@@ -103,4 +95,5 @@ logger.info("Saving results to ShapeFile")
 gdf.to_file(FIG_DIR / "hex_data" / "data.shp")
 
 (FIG_DIR / "grid_data").mkdir(exist_ok=True)
-hex_df.to_file(FIG_DIR / "grid_data" / "data.shp")
+gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=grids_df.crs)
+gdf.to_file(FIG_DIR / "grid_data" / "data.shp")

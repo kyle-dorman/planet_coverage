@@ -25,8 +25,6 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")  # <-- update this
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "time_between"
-FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
 f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
@@ -43,7 +41,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-valid = ~grids_df.is_land & (grids_df.dist_km.isna() | (grids_df.dist_km < MIN_DIST))
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -58,12 +56,9 @@ con.execute(
 )
 logger.info("Registered DuckDB view 'samples_all'")
 
-
-# nbins = 10
-# Use human readable log scale edges
-bin_edges = np.array([0, 1, 2, 7, 14, 30, 60, 90, 180, 365], dtype=np.int32)
-bin_right = bin_edges[1:]  # right edge of each bar
 pct = 90
+FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}"
+FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 
 # --------------------- Yearly Comparision ------------------------
@@ -71,6 +66,10 @@ def yearly_plots():
     start_year = 2015
     end_year = 2024
     valid = True
+    # Use human bins
+    plt_bin_edges = np.array([0, 4, 7, 14, 30, 60, 90, 366], dtype=np.int32)
+    bin_edges = np.array([0, 1, 2, 4, 7, 14, 30, 60, 90, 180, 366], dtype=np.int32)
+    bin_right = bin_edges[1:]  # right edge of each bar
 
     all_years_df = []
 
@@ -84,14 +83,10 @@ def yearly_plots():
 
         hex_df["year"] = year
 
-        # Filter out Antartica
-        hex_df = hex_df[~hex_df.dist_km.isna()]
-
         all_years_df.append(hex_df.copy().reset_index())
 
         agg = hex_df.groupby("hex_id").agg(
             median_days_between=(f"p{pct}_days_between", "median"),
-            min_days_between=(f"p{pct}_days_between", "min"),
         )
         agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
         gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
@@ -103,16 +98,8 @@ def yearly_plots():
             title=title,
             show_land_ocean=True,
             save_path=FIG_DIR / f"median_days_between_{disp_year}.png",
-            vmax=180,
-        )
-        title = f"p{pct} Days Between Samples (Year: {disp_year}, Agg: Min)"
-        plot_gdf_column(
-            gdf,
-            "min_days_between",
-            title=title,
-            show_land_ocean=True,
-            save_path=FIG_DIR / f"min_days_between_{disp_year}.png",
-            vmax=180,
+            # vmax=180,
+            bins=plt_bin_edges.tolist(),
         )
 
     # Aggregate over all years per grid and then group by hex_id.
@@ -184,9 +171,7 @@ def yearly_plots():
     hex_df = (
         grids_df[["geometry", "hex_id", "dist_km"]].join(grid_grouped, how="left").fillna({f"p{pct}_days_between": 365})
     )
-    # Filter out Antartica
-    hex_df = hex_df[~hex_df.dist_km.isna()]
-    gdf = gpd.GeoDataFrame(hex_df.copy(), geometry="geometry", crs=grids_df.crs)
+    gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=grids_df.crs)
     # Save data
     logger.info("Saving per grid yearly aggregated grid results to ShapeFile")
     (FIG_DIR / "per_grid_year_agg").mkdir(exist_ok=True)
@@ -194,7 +179,6 @@ def yearly_plots():
 
     agg = hex_df.groupby("hex_id").agg(
         median_median_days_between=("median_days_between", "median"),
-        min_median_days_between=("median_days_between", "min"),
     )
     agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
     gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
@@ -211,18 +195,9 @@ def yearly_plots():
         title=title,
         show_land_ocean=True,
         save_path=FIG_DIR / "median_median_days_between.png",
-        vmax=180,
+        # vmax=180,
+        bins=plt_bin_edges.tolist(),
     )
-    title = f"p{pct} Days Between Samples (Year Agg: Median, Agg: Min)"
-    plot_gdf_column(
-        gdf,
-        "min_median_days_between",
-        title=title,
-        show_land_ocean=True,
-        save_path=FIG_DIR / "min_median_days_between.png",
-        vmax=180,
-    )
-
     logger.info("Done with yearly plots")
 
 
@@ -234,6 +209,9 @@ def clear_pct_plots():
     cmap_clear = cm.get_cmap("viridis", num_rows)
     year = 2023
     disp_year = year + 1
+    # Use human bins
+    bin_edges = np.array([0, 1, 2, 4, 7, 14, 30, 60, 90, 180, 366], dtype=np.int32)
+    bin_right = bin_edges[1:]  # right edge of each bar
 
     # Cumulative sum plot
     fig, ax = plt.subplots(
@@ -263,9 +241,6 @@ def clear_pct_plots():
         df = con.execute(query).fetchdf().set_index("grid_id")
         hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({f"p{pct}_days_between": 365})
         hex_df["clear_pct"] = clear_pct
-
-        # Filter out Antartica
-        hex_df = hex_df[~hex_df.dist_km.isna()]
 
         all_levels_df.append(hex_df.reset_index().copy())
 

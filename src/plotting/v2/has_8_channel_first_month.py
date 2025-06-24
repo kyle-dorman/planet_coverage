@@ -38,7 +38,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-valid = ~grids_df.is_land & (grids_df.dist_km.isna() | (grids_df.dist_km < MIN_DIST))
+valid = ~grids_df.is_land & grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -155,9 +155,6 @@ first_month_8_channel = (
 )
 
 grid_first_month_8_channel = grids_df[["hex_id", "dist_km"]].join(first_month_8_channel, how="left")
-# Filter Antartica NaN rows
-to_remove = grid_first_month_8_channel.month_start.isna() & grid_first_month_8_channel.dist_km.isna()
-grid_first_month_8_channel = grid_first_month_8_channel[~to_remove].copy()
 
 agg = grid_first_month_8_channel.groupby("hex_id").agg(month_start=("month_start", "max"))
 agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])

@@ -22,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")  # <-- update this
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "tide"
-FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
 f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
@@ -40,8 +38,13 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-valid = ~grids_df.is_land & (grids_df.dist_km.isna() | (grids_df.dist_km < MIN_DIST)) & ~grids_df.tide_range.isna()
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & ~grids_df.tide_range.isna()
 grids_df = grids_df[valid].copy()
+
+
+pct = 90
+FIG_DIR = BASE.parent / "figs_v2" / f"tide_{pct}"
+FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 
 # --- Connect to DuckDB ---
@@ -87,16 +90,6 @@ geo_tide["obs_tide_range"] = geo_tide.obs_max_tide_height - geo_tide.obs_min_tid
 geo_tide["obs_high_tide_offset"] = geo_tide.tide_max - geo_tide.obs_max_tide_height
 geo_tide["obs_low_tide_offset"] = geo_tide.obs_min_tide_height - geo_tide.tide_min
 geo_tide["tide_range_coverage"] = geo_tide["obs_tide_range"] / geo_tide["tide_range"]
-
-# Filter Antartica NaN rows
-to_remove = geo_tide.obs_max_tide_height.isna() & geo_tide.dist_km.isna()
-geo_tide = geo_tide[~to_remove].copy()
-
-# # Fill non-Antartica NaN rows
-# fill_rows = geo_tide.obs_max_tide_height.isna()
-# geo_tide.loc[fill_rows, "obs_high_tide_offset"] = geo_tide.loc[fill_rows].tide_range
-# geo_tide.loc[fill_rows, "obs_low_tide_offset"] = geo_tide.loc[fill_rows].tide_range
-# geo_tide.loc[fill_rows, "tide_range_coverage"] = 0.0
 
 logger.info("Joined tide extremes with coastal grids: geo_tide has %d rows", len(geo_tide))
 
@@ -161,16 +154,12 @@ plot_gdf_column(
 # Use human readable log scale edges
 bin_edges = np.array([0, 1, 2, 7, 14, 30, 60, 90, 180, 365], dtype=np.int32)
 bin_right = bin_edges[1:]  # right edge of each bar
-pct = 90
 year = 2023
 
 extra_filter = "AND is_mid_tide AND has_tide_data"
 query = make_time_between_query(year, pct, valid_only=True, extra_filter=extra_filter)
 df = con.execute(query).fetchdf().set_index("grid_id")
 hex_df = grids_df[["hex_id", "dist_km"]].join(df, how="left")
-# Filter Antartica NaN rows
-to_remove = hex_df[f"p{pct}_days_between"].isna() & hex_df.dist_km.isna()
-hex_df = hex_df[~to_remove].copy()
 
 agg = hex_df.groupby("hex_id").agg(
     median_days_between=(f"p{pct}_days_between", "median"),
@@ -180,14 +169,16 @@ agg = hex_df.groupby("hex_id").agg(
 agg = agg[agg.index >= 0].join(hex_grid[["geometry"]], how="inner")
 gdf = gpd.GeoDataFrame(agg, geometry="geometry")
 
+plt_bin_edges = np.array([0, 4, 7, 14, 30, 60, 90, 366], dtype=np.int32)
 plot_gdf_column(
     gdf,
     "median_days_between",
-    title=f"p{pct} Time Between Mid-Tide Samples (days)",
+    title=f"p{pct} Time Between Mid-Tide Samples",
     show_land_ocean=True,
-    vmax=180,
+    # vmax=180,
     ax=axes[0, 0],
     use_cbar_label=False,
+    bins=plt_bin_edges.tolist(),
 )
 
 fig.suptitle("Tidal Coverage", fontsize=14)

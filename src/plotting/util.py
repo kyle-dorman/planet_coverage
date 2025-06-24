@@ -26,7 +26,9 @@ def load_grids(base: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoD
     return query_df, grids_df, hex_grid
 
 
-def create_merged_grids(base: Path, shorelines: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
+def create_merged_grids(
+    base: Path, shorelines: Path, hex_size: float = 1.5
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
     display_crs = "EPSG:4326"
     robinson_crs = "ESRI:54030"
     sinus_crs = "ESRI:54008"
@@ -44,7 +46,7 @@ def create_merged_grids(base: Path, shorelines: Path) -> tuple[gpd.GeoDataFrame,
         len(heuristics_df),
     )
 
-    cell_size_m = compute_step(1.5)
+    cell_size_m = compute_step(hex_size)
     _, hex_grid = make_equal_area_hex_grid(cell_size_m, robinson_crs)
     hex_grid = hex_grid.to_crs(sinus_crs)
     hex_grid = hex_grid.rename(columns={"cell_id": "hex_id"})
@@ -87,7 +89,8 @@ def plot_gdf_column(
     cmap: str = "viridis",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
-    scale: str = "linear",  # "linear"  or  "log"
+    scale: str = "linear",  # "linear", "log", or "hist"
+    bins: Optional[Sequence[float]] = None,  # if given, use discrete bins
     figsize: Tuple[int, int] = (12, 6),
     edgecolor: str = "black",
     linewidth: float = 0.15,
@@ -111,6 +114,16 @@ def plot_gdf_column(
 
     `pad_fraction` adds a percentage of the data extent as padding so the data
     don’t touch the frame edge.
+
+    scale : {"linear", "log", "hist"}
+        Controls the colormap normalization. "hist" triggers discrete binning.
+
+    bins : Sequence[float] | None
+        If provided, the data are coloured **discretely** using these bin
+        edges (left‑inclusive, right‑exclusive; last bin right‑inclusive).
+        If ``bins`` is *None* and ``scale=="hist"``, the function will
+        auto‑generate 7 bins spanning *vmin…vmax* using either
+        ``np.linspace`` (linear) or ``np.logspace`` (log).
 
     For ``scale="log"``, features whose value is ``<= 0`` are plotted in gray so
     they remain visible without breaking the logarithmic colour mapping.
@@ -150,6 +163,8 @@ def plot_gdf_column(
     if vmax is None:
         vmax = np.nanmax(data)
 
+    use_bins = bins is not None or scale == "hist"
+
     if is_datetime:
         norm = colors.Normalize(vmin=np.nanmin(numeric_vals), vmax=np.nanmax(numeric_vals))  # type: ignore
 
@@ -160,7 +175,29 @@ def plot_gdf_column(
         formatter = ticker.FuncFormatter(_fmt)
         locator = ticker.MaxNLocator(nbins=6)  # or mdates.MonthLocator()
         valid_mask = ~nan_mask  # all non-NaN for datetime
+        cmap = plt.get_cmap(cmap)  # type: ignore
+    elif use_bins:
+        if bins is None:
+            nbins = 7
+            assert vmin is not None
+            assert vmax is not None
+            if scale == "log":
+                bins = np.logspace(np.log10(vmin), np.log10(vmax), nbins + 1)
+            else:  # linear or hist default
+                bins = np.linspace(vmin, vmax, nbins + 1).tolist()
+        assert bins is not None
+        bins = np.asarray(bins, dtype=float)  # type: ignore
+        assert bins is not None
+        nbins = len(bins) - 1
+        cmap = plt.get_cmap(cmap, nbins)  # type: ignore
+        norm = colors.BoundaryNorm(bins, nbins)
+        valid_mask = ~nan_mask
+        formatter = ticker.ScalarFormatter()
+        locator = ticker.MaxNLocator(nbins=6)
+
     else:
+        cmap = plt.get_cmap(cmap)  # type: ignore
+
         if scale == "log":
             valid_mask = (data > 0) & (~nan_mask)
             if not valid_mask.any():
@@ -175,14 +212,11 @@ def plot_gdf_column(
             formatter = ticker.ScalarFormatter()
             locator = ticker.MaxNLocator(nbins=6)
 
-    cmap = plt.get_cmap(cmap)  # type: ignore
-
     # ------------------------------------------------------------------
     # Prepare figure / axis
     # ------------------------------------------------------------------
     if ax is None:
-        fig = plt.figure(figsize=figsize)
-        ax = plt.axes(projection=projection)
+        fig, ax = plt.subplots(1, 1, figsize=figsize, constrained_layout=True, subplot_kw={"projection": projection})
         provided_ax = False
     else:
         fig = ax.figure
@@ -207,56 +241,30 @@ def plot_gdf_column(
     # ------------------------------------------------------------------
     # Plot data
     # ------------------------------------------------------------------
-    if scale == "log":
-        gdf_valid = gdf.loc[valid_mask]
-        gdf_invalid = gdf.loc[~valid_mask]  # ≤0 or NaN
+    gdf_valid = gdf.loc[valid_mask]
+    gdf_invalid = gdf.loc[~valid_mask]  # ≤0 or NaN
 
-        if not gdf_invalid.empty:
-            gdf_invalid.plot(
-                ax=ax,
-                color="lightgray",
-                transform=ccrs.PlateCarree(),
-                edgecolor=edgecolor,
-                linewidth=linewidth,
-                zorder=1,
-            )
+    if not gdf_invalid.empty:
+        gdf_invalid.plot(
+            ax=ax,
+            color="lightgray",
+            transform=ccrs.PlateCarree(),
+            edgecolor=edgecolor,
+            linewidth=linewidth,
+            zorder=1,
+        )
 
-        if not gdf_valid.empty:
-            gdf_valid.plot(
-                column=column,
-                cmap=cmap,
-                norm=norm,
-                ax=ax,
-                transform=ccrs.PlateCarree(),
-                edgecolor=edgecolor,
-                linewidth=linewidth,
-                zorder=2,
-            )
-    else:
-        gdf_nan = gdf.loc[nan_mask]
-        gdf_vals = gdf.loc[~nan_mask]
-
-        if not gdf_nan.empty:
-            gdf_nan.plot(
-                ax=ax,
-                color="lightgray",
-                transform=ccrs.PlateCarree(),
-                edgecolor=edgecolor,
-                linewidth=linewidth,
-                zorder=1,
-            )
-
-        if not gdf_vals.empty:
-            gdf_vals.plot(
-                column=column,
-                cmap=cmap,
-                norm=norm,
-                ax=ax,
-                transform=ccrs.PlateCarree(),
-                edgecolor=edgecolor,
-                linewidth=linewidth,
-                zorder=2,
-            )
+    if not gdf_valid.empty:
+        gdf_valid.plot(
+            column=column,
+            cmap=cmap,
+            norm=norm,
+            ax=ax,
+            transform=ccrs.PlateCarree(),
+            edgecolor=edgecolor,
+            linewidth=linewidth,
+            zorder=2,
+        )
 
     if show_coastlines:
         ax.coastlines(resolution="110m", linewidth=0.3)  # type: ignore
@@ -270,14 +278,29 @@ def plot_gdf_column(
     if add_color_bar:
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
-        cbar = fig.colorbar(sm, ax=ax, orientation="vertical", shrink=0.65, pad=0.02, format=formatter)
-        cbar.locator = locator
-        cbar.update_ticks()
+
+        cbar = fig.colorbar(
+            sm,
+            ax=ax,
+            orientation="vertical",
+            shrink=0.65,
+            pad=0.02,
+        )
+
+        if use_bins:
+            assert bins is not None
+            cbar.set_ticks(bins)
+            cbar.set_ticklabels([f"{b:g}" for b in bins])
+        else:
+            cbar.formatter = formatter
+            cbar.locator = locator
+            cbar.update_ticks()
+
         if use_cbar_label:
             cbar.set_label(orig_column)
 
     if title:
-        ax.set_title(title, pad=12)
+        ax.set_title(title, pad=20, fontsize=20)
 
     if save_path is not None:
         plt.savefig(save_path)

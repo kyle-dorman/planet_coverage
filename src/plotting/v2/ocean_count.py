@@ -89,8 +89,6 @@ agg = (
 agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
 gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=hex_grid.crs)
 
-vmax = gdf.median_sample_count.max()
-
 plot_gdf_column(
     gdf,
     "median_sample_count",
