@@ -7,10 +7,28 @@ import click
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import polars as pl
 from shapely import wkb
 from tqdm.auto import tqdm
 
 from src.tides import tide_model
+
+SCHEMA = {
+    "dove_id": pl.Utf8,
+    "skysat_id": pl.Utf8,
+    "grid_id": pl.UInt32,
+    "cell_id": pl.UInt32,
+    "overlap_area": pl.Float32,
+    "geometry_wkb": bytes,
+    "dove_acquired": pl.Datetime,
+    "skysat_acquired": pl.Datetime,
+    "time_of_day_delta_sec": pl.Float32,
+    "acquired_delta_sec": pl.Float32,
+    "dove_tide_height": pl.Float32,
+    "skysat_tide_height": pl.Float32,
+    "tide_height_delta": pl.Float32,
+    "has_8_channel": pl.Boolean,
+}
 
 
 def load_gdf(pth: Path | str, crs: str) -> gpd.GeoDataFrame:
@@ -27,13 +45,20 @@ def _load_grids(path: str) -> gpd.GeoDataFrame:
     return gpd.read_file(path)
 
 
+def get_save_path(base: Path, year: int, index: int) -> Path:
+    hex_id = f"{index:06x}"  # unique 6‑digit hex, e.g. '0f1a2b'
+    d1, d2, d3 = hex_id[:2], hex_id[2:4], hex_id[4:6]
+    save_path = base / str(year) / d1 / d2 / d3
+    return save_path
+
+
 # helper so we can use imap_unordered and keep tqdm progress
 def _star_compute(args: Tuple[Any, ...]) -> pd.DataFrame | None:
     return process_pair(*args)
 
 
 def process_pair(
-    base: Path,
+    save_dir: Path,
     dove_path: Path,
     skysat_path: Path,
     grid_path: Path,
@@ -41,6 +66,7 @@ def process_pair(
     tide_data_dir: Path,
     clear_thresh: float,
     time_window: float,  # days
+    time_of_day_window: float,  # hours  <-- NEW
     overlap_area: float,
     max_tide_difference: float,
     filter_coastal_area: bool,
@@ -50,8 +76,8 @@ def process_pair(
 
     Parameters
     ----------
-    base : Path
-        The root run directory
+    save_dir : Path
+        The save directory
     dove_path : Path
         Parquet file for the Dove cell.
     skysat_path : Path
@@ -64,11 +90,10 @@ def process_pair(
         Maximum allowable difference in tide height (m).
     filter_coastal_area : bool
         If True, restrict SkySat frames to those intersecting coastal land areas (mainlands and islands).
-
-    Returns
-    -------
-    pd.DataFrame
-        Intersection rows with cell_id and WKB geometry.
+    time_window : float
+        Maximum allowable difference in acquisition time (days) between Dove and SkySat.
+    time_of_day_window : float
+        Maximum allowable difference in clock time (hours) between the Dove and SkySat acquisitions.
     """
     grids_df = _load_grids(str(grid_path)).rename(columns={"cell_id": "grid_id"})
     query_df = _load_grids(str(query_path))
@@ -84,7 +109,11 @@ def process_pair(
     cell_id = cell_ids[0]
     assert (ss_df.cell_id == cell_id).all()
 
-    grid_geom = query_df.centroid.to_crs("EPSG:4326").loc[cell_id]
+    year = int(dove_path.parent.parent.parent.parent.name)
+    save_dest = get_save_path(save_dir, year, cell_id) / "data.parquet"
+
+    grids_df = grids_df[grids_df.intersects(query_df.loc[cell_id].geometry)]
+    grid_geom = query_df.to_crs("EPSG:4326").loc[cell_id].geometry
 
     d_df = d_df[
         (d_df.clear_percent > clear_thresh)
@@ -104,30 +133,19 @@ def process_pair(
         return
 
     if filter_coastal_area:
-        mainlands = gpd.read_file(base.parent / "shorelines" / "mainlands.gpkg")
-        mainlands = mainlands[mainlands.intersects(grid_geom)]
-        big_islands = gpd.read_file(base.parent / "shorelines" / "big_islands.gpkg")
-        big_islands = big_islands[big_islands.intersects(grid_geom)]
-        small_islands = gpd.read_file(base.parent / "shorelines" / "small_islands.gpkg")
-        small_islands = small_islands[small_islands.intersects(grid_geom)]
+        keep_grids = grids_df[~(grids_df["dist_km"].isna()) & (grids_df["dist_km"] < 5)].to_crs("EPSG:4326")
 
         # Filter to just coastal geoms
         ss_df = ss_df.set_index("id")
-        coastal_ss_ids = np.unique(
-            np.concatenate(
-                [
-                    gpd.sjoin(ss_df[["geometry"]], lyr[["geometry"]]).index
-                    for lyr in (mainlands, big_islands, small_islands)
-                ]
-            )
-        )
+        coastal_ss_ids = ss_df[["geometry"]].sjoin(keep_grids[["geometry"]]).index
         ss_df = ss_df.loc[coastal_ss_ids].copy()
         ss_df.reset_index(inplace=True)
 
     if not len(ss_df):
         return
 
-    latlon = np.array([grid_geom.y, grid_geom.x])
+    grid_centroid = grid_geom.centroid
+    latlon = np.array([grid_centroid.y, grid_centroid.x])
 
     heights = tm.tide_elevations(latlon, d_df.acquired.to_numpy()[None])[0]  # type: ignore
     d_df["tide_height"] = heights
@@ -160,9 +178,24 @@ def process_pair(
     dss_joined["acquired_delta"] = dss_joined.dove_acquired - dss_joined.skysat_acquired
     dss_joined["overlap_area"] = dss_joined.geometry.area
 
+    # ── clock‑time difference (mod 24 h) ────────────────────────────────────
+    dove_tod_sec = (
+        dss_joined.dove_acquired.dt.hour * 3600
+        + dss_joined.dove_acquired.dt.minute * 60
+        + dss_joined.dove_acquired.dt.second
+    )
+    skysat_tod_sec = (
+        dss_joined.skysat_acquired.dt.hour * 3600
+        + dss_joined.skysat_acquired.dt.minute * 60
+        + dss_joined.skysat_acquired.dt.second
+    )
+    tod_delta = (dove_tod_sec - skysat_tod_sec).abs()
+    dss_joined["time_of_day_delta_sec"] = np.minimum(tod_delta, 86400 - tod_delta)
+
     overlapping = dss_joined[
         (dss_joined.acquired_delta < pd.Timedelta(days=time_window))
         & (dss_joined.acquired_delta > pd.Timedelta(days=-time_window))
+        & (dss_joined.time_of_day_delta_sec < time_of_day_window * 3600)
         & (dss_joined.overlap_area > overlap_area)
         & (dss_joined.tide_height_delta < max_tide_difference)
     ].copy()
@@ -170,7 +203,7 @@ def process_pair(
     if not len(overlapping):
         return None
 
-    # initial spatial join: match coastal grids to query cells by containment
+    # initial spatial join: match coastal grids to grid cells by containment
     joined = gpd.overlay(
         overlapping[["dove_id", "skysat_id", "geometry"]],
         grids_df[["grid_id", "geometry"]],
@@ -197,7 +230,17 @@ def process_pair(
     )
     overlap_with_grid_id["cell_id"] = cell_id
 
-    return overlap_with_grid_id
+    if not len(overlap_with_grid_id):
+        return
+
+    overlap_with_grid_id["geometry_wkb"] = overlap_with_grid_id["geometry"].apply(wkb.dumps)
+    overlap_with_grid_id.drop(columns=["geometry"], inplace=True)
+
+    # Convert to Polars (or pandas) to write out
+    pl_out = pl.from_pandas(overlap_with_grid_id, schema_overrides=SCHEMA, include_index=False)
+
+    save_dest.parent.mkdir(exist_ok=True, parents=True)
+    pl_out.write_parquet(save_dest)
 
 
 @click.command()
@@ -206,6 +249,12 @@ def process_pair(
     required=True,
     type=click.Path(file_okay=False, dir_okay=True),
     help="Root directory that contains dove/ and skysat result trees.",
+)
+@click.option(
+    "--save-dir",
+    required=True,
+    type=click.Path(file_okay=False, dir_okay=True),
+    help="Where to save the results.",
 )
 @click.option(
     "--query-grids-path",
@@ -224,6 +273,12 @@ def process_pair(
 )
 @click.option("--clear-thresh", default=75.0, show_default=True, help="Minimum SkySat clear_percent.")
 @click.option("--time-window", default=15.0, show_default=True, help="Max |Δacquired| in DAYS between Dove and SkySat.")
+@click.option(
+    "--time-of-day-window",
+    default=2.0,
+    show_default=True,
+    help="Max time-of-day difference (in HOURS) between Dove and SkySat.",
+)
 @click.option("--overlap-area", default=300**2, show_default=True, help="Minimum overlap area in square meters.")
 @click.option(
     "--max-tide-difference",
@@ -239,26 +294,20 @@ def process_pair(
 )
 @click.option("--nproc", type=int, default=cpu_count() - 1, show_default=True, help="Number of worker processes.")
 @click.option("--chunksize", default=16, show_default=True, help="Chunk size passed to imap_unordered.")
-@click.option(
-    "--out",
-    type=click.Path(dir_okay=False),
-    default="skysat_dove_intersections.gpkg",
-    show_default=True,
-    help="Output GPKG path.",
-)
 def main(
     base_dir: str,
+    save_dir: Path,
     query_grids_path: Path,
     grid_file: str,
     tide_data_dir: Path,
     clear_thresh: float,
     time_window: float,
+    time_of_day_window: float,
     overlap_area: float,
     max_tide_difference: float,
     filter_coastal_area: bool,
     nproc: int,
     chunksize: int,
-    out: str,
 ) -> None:
     """
     Find intersecting Dove/SkySat footprints for every matching pair of Parquet
@@ -274,7 +323,7 @@ def main(
             continue
         tasks.append(
             (
-                base,
+                Path(save_dir),
                 dove_path,
                 skysat_path,
                 grid_path,
@@ -282,6 +331,7 @@ def main(
                 tide_data_dir,
                 clear_thresh,
                 time_window,
+                time_of_day_window,
                 overlap_area,
                 max_tide_difference,
                 filter_coastal_area,
@@ -296,22 +346,12 @@ def main(
     click.echo(f"Processing {len(tasks)} pairs on {nproc} processes …")
 
     with Pool(processes=nproc) as pool:
-        results = list(
-            tqdm(
-                pool.imap_unordered(_star_compute, tasks, chunksize=chunksize),
-                total=len(tasks),
-                desc="Intersecting Year/Grids",
-            )
-        )
-
-    results = [r for r in results if r is not None]
-    if results:
-        all_results = pd.concat(results, ignore_index=True)
-        gdf = gpd.GeoDataFrame(all_results, geometry="geometry", crs=_load_grids(grid_path).crs)
-        gdf.to_file(base / out, driver="GPKG")
-        click.echo(f"✅ Saved {len(all_results)} intersections → {base / out}")
-    else:
-        click.echo("No valid intersections produced.")
+        for _ in tqdm(
+            pool.imap_unordered(_star_compute, tasks, chunksize=chunksize),
+            total=len(tasks),
+            desc="Intersecting Year/Grids",
+        ):
+            pass
 
 
 if __name__ == "__main__":

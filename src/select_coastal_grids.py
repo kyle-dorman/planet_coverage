@@ -13,7 +13,7 @@ import dask_geopandas as dgpd
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree  # type: ignore
 from shapely import MultiLineString
 from shapely.ops import linemerge
 from shapely.prepared import prep
@@ -200,13 +200,19 @@ def main(
     # nearest neighbour query  (returns (distance, index))
     dists, _ = tree.query(cent_xy, workers=-1)  # parallel threads, SciPy ≥1.9
 
+    pts_df = coastal_grids.copy()
+    pts_df.geometry = pts_df.geometry.centroid
+
     sinter = coastal_grids.sjoin(sidf, how="inner", predicate="within").cell_id.unique()
     binter = coastal_grids.sjoin(bidf, how="inner", predicate="within").cell_id.unique()
     minter = coastal_grids.sjoin(mldf, how="inner", predicate="within").cell_id.unique()
     land_ids = np.unique(np.concatenate([sinter, binter, minter]))
 
-    pts_df = coastal_grids.copy()
-    pts_df.geometry = pts_df.geometry.centroid
+    sinter = pts_df.sjoin(sidf, how="inner", predicate="within").cell_id.unique()
+    binter = pts_df.sjoin(bidf, how="inner", predicate="within").cell_id.unique()
+    minter = pts_df.sjoin(mldf, how="inner", predicate="within").cell_id.unique()
+    coastal_ids = np.unique(np.concatenate([sinter, binter, minter]))
+
     snearest = (
         gpd.sjoin_nearest(
             pts_df[["geometry", "cell_id"]],
@@ -226,11 +232,14 @@ def main(
 
     coastal_grids["dist_km"] = pts_df[["dist_km", "sdist_km"]].min(axis=1)
     coastal_grids["is_land"] = coastal_grids.cell_id.isin(land_ids)
+    coastal_grids["is_coast"] = coastal_grids.cell_id.isin(coastal_ids) & ~coastal_grids.is_land
     coastal_grids.loc[coastal_grids.is_land, "dist_km"] = 0.0
+    coastal_grids.loc[coastal_grids.is_coast, "dist_km"] = 0.0
     coastal_grids.loc[coastal_grids.dist_km > 50, "dist_km"] = 50
 
     antarctica_grids["dist_km"] = np.nan
     antarctica_grids["is_land"] = False
+    antarctica_grids["is_coast"] = False
 
     coastal_grids_df = pd.concat([coastal_grids, antarctica_grids], ignore_index=False)
     coastal_grids = gpd.GeoDataFrame(coastal_grids_df, geometry="geometry", crs=sinus_crs)

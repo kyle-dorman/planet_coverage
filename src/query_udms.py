@@ -15,10 +15,10 @@ from shapely.geometry import shape
 from tqdm.asyncio import tqdm_asyncio
 
 from src.config import Instrument, ItemType, PublishingStage, QualityCategory, QueryConfig, planet_asset_string
+from src.geo_util import polygon_to_geojson_dict
 from src.util import (
     check_and_create_env,
     create_config,
-    polygon_to_geojson_dict,
     retry_task,
     setup_logger,
 )
