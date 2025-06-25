@@ -1,4 +1,0 @@
-# The path to a folder of geojson file in the wgs84 CRS. 
-grid_path: UPDATEME
-# The path to a folder where you want to save the data. 
-save_dir: UPDATEME

@@ -50,9 +50,6 @@ class QueryConfig:
     # Asset Type
     asset_type: AssetType = AssetType.basic
 
-    # Base name for Planet UDM search requests
-    udm_search_name: str = "udm2_coverage_search"
-
     # Stage of imagegry data
     publishing_stage: PublishingStage | None = None
 
