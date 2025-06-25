@@ -339,35 +339,57 @@ def make_time_between_query(year: int, pct: int, valid_only: bool, extra_filter:
         extra_filter = ""
 
     return f"""
-    WITH ordered AS (                       -- 1️⃣  rows in time order
+    WITH rows AS (                       -- 1️⃣  all real samples in the window
         SELECT
             grid_id,
-            acquired,
-            EXTRACT(epoch FROM acquired) AS ts          -- seconds-since-epoch
+            EXTRACT(epoch FROM acquired) AS ts
         FROM samples_all
         WHERE
             item_type    = 'PSScene'
-        AND coverage_pct > 0.5
-        AND acquired BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
-        {valid_filter}
-        {extra_filter}
+            AND coverage_pct > 0.5
+            AND acquired BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+            {valid_filter}
+            {extra_filter}
     ),
 
-    deltas AS (                           -- 2️⃣  Δt between consecutive samples
+    bounds AS (                         -- 2️⃣  add the two end-markers
+        -- one row per grid for the window START
+        SELECT DISTINCT
+            grid_id,
+            EXTRACT(epoch FROM TIMESTAMP '{start_date}') AS ts
+        FROM rows
+
+        UNION ALL
+
+        -- one row per grid for the window END
+        SELECT DISTINCT
+            grid_id,
+            EXTRACT(epoch FROM TIMESTAMP '{end_date}')   AS ts
+        FROM rows
+    ),
+
+    ordered AS (                        -- 3️⃣  combine & order in time
+        SELECT grid_id, ts FROM rows
+        UNION ALL
+        SELECT grid_id, ts FROM bounds
+    ),
+
+    deltas AS (                         -- 4️⃣  Δt between consecutive rows
         SELECT
             grid_id,
-            (ts - LAG(ts) OVER (PARTITION BY grid_id
-                                ORDER BY ts)) / 86400.0    AS days_between
+            (ts - LAG(ts) OVER (
+                PARTITION BY grid_id ORDER BY ts
+            )) / 86400.0                    AS days_between
         FROM ordered
     ),
 
-    filtered AS (                         -- 3️⃣  keep only gaps ≥ 12 h
+    filtered AS (                       -- 5️⃣  keep only gaps ≥ 12 h
         SELECT grid_id, days_between
         FROM deltas
         WHERE days_between >= 0.5
     )
 
-    -- 4️⃣  pct per grid
+    -- 6️⃣  percentile per grid
     SELECT
         grid_id,
         quantile_cont(days_between, 0.{pct}) AS p{pct}_days_between
@@ -375,6 +397,98 @@ def make_time_between_query(year: int, pct: int, valid_only: bool, extra_filter:
     WHERE days_between IS NOT NULL
     GROUP BY grid_id
     ORDER BY grid_id;
+    """
+
+
+def make_time_between_hist_query(
+    year: int, bins: Sequence[float], valid_only: bool, extra_filter: str | None = None
+) -> str:
+    """
+    Build the fiscal-year query for a single 12-month window.
+    """
+
+    # ------------------------------------------------------------------
+    # Compute end date = start + 1 year  (no extra deps needed)
+    # ------------------------------------------------------------------
+    start_dt = datetime(year, 12, 1).date()
+    end_dt = start_dt.replace(year=start_dt.year + 1)
+    end_date = end_dt.isoformat()
+    start_date = start_dt.isoformat()
+
+    edges_sql = "LIST_VALUE(" + ", ".join(f"{b}" for b in bins) + ")"
+
+    valid_filter = (
+        """
+        AND publishing_stage = 'finalized'
+        AND quality_category = 'standard'
+        AND clear_percent    > 75.0
+        AND has_sr_asset
+        AND ground_control
+    """
+        if valid_only
+        else ""
+    )
+    if extra_filter is None:
+        extra_filter = ""
+
+    return f"""
+    WITH rows AS (                       -- 1️⃣  all real samples in the window
+        SELECT
+            grid_id,
+            EXTRACT(epoch FROM acquired) AS ts
+        FROM samples_all
+        WHERE
+            item_type    = 'PSScene'
+            AND coverage_pct > 0.5
+            AND acquired BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+            {valid_filter}
+            {extra_filter}
+    ),
+
+    bounds AS (                         -- 2️⃣  add the two end-markers
+        -- one row per grid for the window START
+        SELECT DISTINCT
+            grid_id,
+            EXTRACT(epoch FROM TIMESTAMP '{start_date}') AS ts
+        FROM rows
+
+        UNION ALL
+
+        -- one row per grid for the window END
+        SELECT DISTINCT
+            grid_id,
+            EXTRACT(epoch FROM TIMESTAMP '{end_date}')   AS ts
+        FROM rows
+    ),
+
+    ordered AS (                        -- 3️⃣  combine & order in time
+        SELECT grid_id, ts FROM rows
+        UNION ALL
+        SELECT grid_id, ts FROM bounds
+    ),
+
+    deltas AS (                         -- 4️⃣  Δt between consecutive rows
+        SELECT
+            grid_id,
+            (ts - LAG(ts) OVER (
+                PARTITION BY grid_id ORDER BY ts
+            )) / 86400.0                    AS days_between
+        FROM ordered
+    ),
+
+    filtered AS (                       -- 5️⃣  keep only gaps ≥ 12 h
+        SELECT grid_id, days_between
+        FROM deltas
+        WHERE days_between >= 0.5
+    )
+
+    SELECT
+        histogram(
+            days_between,
+            {edges_sql}
+        ) AS bucket
+    FROM filtered
+    WHERE days_between IS NOT NULL
     """
 
 
@@ -414,7 +528,8 @@ def make_multiple_captures_query(year: int, valid_only: bool = False) -> str:
     WITH filtered AS (
         SELECT
             grid_id,
-            DATE_TRUNC('day', acquired) AS day
+            DATE_TRUNC('day', acquired) AS day,
+            satellite_id
         FROM samples_all
         WHERE
             acquired >= TIMESTAMP '{start_date}'
@@ -425,10 +540,10 @@ def make_multiple_captures_query(year: int, valid_only: bool = False) -> str:
     ),
 
     grouped AS (
-        SELECT grid_id, day, COUNT(*) AS count
+        SELECT grid_id, day
         FROM filtered
         GROUP BY grid_id, day
-        HAVING COUNT(*) > 1
+        HAVING approx_count_distinct(satellite_id) > 1
     )
 
     SELECT grid_id, COUNT(*) AS multi_capture_days
@@ -566,7 +681,7 @@ def make_max_daily_captures_query(year: int, valid_only: bool = False) -> str:
 # ----------------------------------------------------------------------
 # Query to build a per‑grid histogram of time‑between‑samples
 # ----------------------------------------------------------------------
-def make_time_between_hist_query(
+def make_dialy_time_between_hist_query(
     year: int,
     bins: Sequence[float],
     *,
@@ -575,7 +690,7 @@ def make_time_between_hist_query(
 ) -> str:
     """
     Build a DuckDB query that returns **one row per grid_id**
-    with counts of time-between-amples falling into the supplied
+    with counts of time-between-samples falling into the supplied
     ``bins``.  Bins are expressed in **days** (e.g. ``[0, 0.25, 0.5, 1.0]``),
     are left-inclusive / right-exclusive, and must be strictly
     increasing.

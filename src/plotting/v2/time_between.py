@@ -11,7 +11,7 @@ from matplotlib import pyplot as plt
 from matplotlib.ticker import NullLocator
 from tqdm import tqdm
 
-from src.plotting.util import load_grids, make_time_between_query, plot_gdf_column
+from src.plotting.util import load_grids, make_time_between_hist_query, make_time_between_query, plot_gdf_column
 
 warnings.filterwarnings("ignore")  # hide every warning
 
@@ -41,7 +41,8 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
+lats = grids_df.centroid.y
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.0) & (lats < 81.0)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -56,7 +57,7 @@ con.execute(
 )
 logger.info("Registered DuckDB view 'samples_all'")
 
-pct = 90
+pct = 50
 FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -71,19 +72,34 @@ def yearly_plots():
     bin_edges = np.array([0, 1, 2, 4, 7, 14, 30, 60, 90, 180, 366], dtype=np.int32)
     bin_right = bin_edges[1:]  # right edge of each bar
 
+    all_year_counts = np.zeros(len(bin_edges) - 1)
+
     all_years_df = []
 
     for year in tqdm(range(start_year, end_year), total=end_year - start_year):
         disp_year = year + 1
 
+        query = make_time_between_hist_query(year, bin_edges.tolist(), valid)
+        hist_dict = con.execute(query).fetchall()[0][0]
+
+        counts = np.array(list(hist_dict.values()))
+        bins = np.array(list(hist_dict.keys()))
+        # Ensure bins are in correct order (they should be!)
+        order = np.argsort(bins)
+        bins = bins[order]
+        counts = counts[order]
+        all_year_counts += counts[1:]  # skip the <min bin
+
         query = make_time_between_query(year, pct, valid)
 
         df = con.execute(query).fetchdf().set_index("grid_id")
-        hex_df = grids_df[["geometry", "hex_id", "dist_km"]].join(df, how="left").fillna({f"p{pct}_days_between": 365})
+        hex_df = grids_df[["geometry", "hex_id", "dist_km"]].join(df, how="left")
+
+        hex_df[hex_df[f"p{pct}_days_between"] > 180] = np.nan
 
         hex_df["year"] = year
 
-        all_years_df.append(hex_df.copy().reset_index())
+        all_years_df.append(hex_df.fillna({f"p{pct}_days_between": 365}).copy().reset_index())
 
         agg = hex_df.groupby("hex_id").agg(
             median_days_between=(f"p{pct}_days_between", "median"),
@@ -101,6 +117,54 @@ def yearly_plots():
             # vmax=180,
             bins=plt_bin_edges.tolist(),
         )
+
+    # ------- Plot hist -------------
+
+    # create a 2 × 5 grid of axes (ten panels)
+    fig, ax = plt.subplots(
+        1,
+        1,
+        figsize=(6, 4),
+        constrained_layout=True,
+    )
+
+    # ── plot, with edge & alpha for depth ───────────────────────────────────
+    cumsum = np.cumsum(all_year_counts)
+    total = cumsum[-1] if cumsum[-1] else 1.0  # prevent divide-by-zero
+    cumsum_pct = cumsum / total * 100.0  # → 0-100 %
+
+    ax.plot(
+        bin_right,
+        cumsum_pct,
+        marker="o",
+        linestyle="-",
+    )
+
+    ax.set_ylim(0, 100)
+    ax.set_xscale("log")
+    ax.set_xticks(bin_edges[1:])
+    ax.set_xticklabels(
+        [f"{b:g}" for b in bin_edges[1:]],
+        rotation=45,
+        ha="right",
+    )
+    ax.xaxis.set_minor_locator(NullLocator())
+    # ax.tick_params(axis="both", labelsize=8)
+    ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
+    ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+    ax.legend()
+
+    fig.supylabel("Cumulative Sum", fontsize=12)
+    fig.supxlabel("Time Between Samples (days)", fontsize=12)
+    fig.suptitle(
+        "Cumulative Distribution Time Between Samples",
+        fontsize=14,
+    )
+
+    plt.savefig(FIG_DIR / "cumsum_time_between_all_samples.png")
+    plt.close(fig)
+
+    # ------- Plot Geo -------------
 
     # Aggregate over all years per grid and then group by hex_id.
     df = pd.concat(all_years_df, ignore_index=True)
@@ -168,9 +232,7 @@ def yearly_plots():
     grid_grouped = df.groupby("grid_id").agg(
         median_days_between=(f"p{pct}_days_between", "median"),
     )
-    hex_df = (
-        grids_df[["geometry", "hex_id", "dist_km"]].join(grid_grouped, how="left").fillna({f"p{pct}_days_between": 365})
-    )
+    hex_df = grids_df[["geometry", "hex_id", "dist_km"]].join(grid_grouped, how="left")
     gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=grids_df.crs)
     # Save data
     logger.info("Saving per grid yearly aggregated grid results to ShapeFile")

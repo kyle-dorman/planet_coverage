@@ -83,7 +83,7 @@ agg = (
     hex_df.dropna(subset=["sample_count"])
     .groupby("hex_id")
     .agg(
-        median_sample_count=("sample_count", "median"),
+        max_sample_count=("sample_count", "max"),
     )
 )
 agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
@@ -91,10 +91,10 @@ gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=hex_grid.crs)
 
 plot_gdf_column(
     gdf,
-    "median_sample_count",
+    "max_sample_count",
     title="Open Ocean Sample Count (Since 7/19/2023)",
     show_land_ocean=True,
-    save_path=FIG_DIR / "median_sample_count.png",
+    save_path=FIG_DIR / "max_sample_count.png",
     scale="log",
     use_cbar_label=False,
 )

@@ -3,6 +3,7 @@ import warnings
 from pathlib import Path
 
 import duckdb
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
@@ -11,7 +12,9 @@ from tqdm import tqdm
 
 from src.plotting.util import (
     load_grids,
-    make_time_between_hist_query,
+    make_dialy_time_between_hist_query,
+    make_multiple_captures_query,
+    plot_gdf_column,
 )
 
 # Pleasant default style
@@ -47,7 +50,8 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-valid = ~grids_df.is_land & grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
+lats = grids_df.centroid.y
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.0) & (lats < 81.0)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -84,7 +88,7 @@ con.register("grid_ids_tbl", grid_tbl)
 all_year_counts = np.zeros(len(minute_edges) - 1)
 
 for year in tqdm(range(2016, 2025), total=2025 - 2016):
-    query = make_time_between_hist_query(
+    query = make_dialy_time_between_hist_query(
         year,
         bins=day_edges,
         valid_only=valid,
@@ -142,3 +146,29 @@ fig.suptitle("Time Between Same-Day Samples", fontsize=14)
 
 plt.savefig(FIG_DIR / "histogram_time_between_samples.png")
 plt.close(fig)
+
+
+year = 2023
+query = make_multiple_captures_query(year, valid_only=True)
+
+df = con.execute(query).fetchdf().set_index("grid_id")
+hex_df = grids_df.join(df, how="inner")
+
+logger.info("Query finished")
+
+logger.info("Plotting")
+agg = hex_df.groupby("hex_id").agg(
+    max_multi_capture_days=("multi_capture_days", "max"),
+)
+agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
+gdf = gpd.GeoDataFrame(agg, geometry="geometry")
+
+plot_gdf_column(
+    gdf,
+    "max_multi_capture_days",
+    title="Count Multi-Capture Days",
+    show_land_ocean=True,
+    save_path=FIG_DIR / "max_multi_capture_days.png",
+    show=False,
+    use_cbar_label=False,
+)
