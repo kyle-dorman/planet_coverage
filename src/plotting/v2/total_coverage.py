@@ -38,7 +38,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.0) & (lats < 81.0)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -81,13 +81,14 @@ agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
 gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
 plot_gdf_column(
-    gdf,
-    "median_count",
+    gdf=gdf,
+    column="median_count",
     title="Sample Count (12/2015-12/2024)",
-    show_land_ocean=True,
+    title_fontsize=15,
     scale="log",
-    save_path=FIG_DIR / "median.png",
     vmin=10,
+    vmax=5500,
+    save_path=FIG_DIR / "median.png",
     use_cbar_label=False,
 )
 
@@ -98,3 +99,5 @@ gdf.to_file(FIG_DIR / "hex_data" / "data.shp")
 (FIG_DIR / "grid_data").mkdir(exist_ok=True)
 gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=grids_df.crs)
 gdf.to_file(FIG_DIR / "grid_data" / "data.shp")
+
+logger.info("Done")

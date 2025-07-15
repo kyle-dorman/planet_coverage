@@ -73,7 +73,8 @@ You can inspect the results using an included jupyter notebook.
 
 Launch jupyter notebook
 ```bash
-jupyter notebook --notebook-dir=notebooks --port=8893
+conda activate planet_coverage
+jupyter lab --notebook-dir=notebooks --port=8893
 ```
 Run the notebook `analysis.ipynb` to query the data with duckdb. 
 

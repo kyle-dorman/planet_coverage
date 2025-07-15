@@ -20,13 +20,11 @@ logger.info("Computing basic stats on dataset")
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs" / BASE.name / "ocean"
-FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.0) & (lats < 81.0)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid].copy()
 logger.info("Loaded grid dataframes")
 
@@ -221,3 +219,5 @@ valid_sample_count = df.sample_count.iloc[0]
 print(valid_sample_count)
 print(round(100.0 * valid_sample_count / total_sample_count, 1), "%")
 print("")
+
+logger.info("Done")

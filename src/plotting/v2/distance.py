@@ -39,7 +39,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 35.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.0) & (lats < 81.0)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid]
 
 # --- Connect to DuckDB ---
@@ -136,3 +136,5 @@ ax.grid(True, which="both", linestyle=":", linewidth=0.3)
 ax.legend()
 plt.savefig(FIG_DIR / "cdf_dist_vs_sample_count.png")
 plt.close(fig)
+
+logger.info("Done")

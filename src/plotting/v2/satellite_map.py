@@ -145,3 +145,5 @@ if image_files:
     logger.info("Video saved to %s", vid_path)
 else:
     logger.warning("No images found to create video.")
+
+logger.info("Done")

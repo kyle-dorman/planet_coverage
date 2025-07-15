@@ -90,15 +90,17 @@ agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
 gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=hex_grid.crs)
 
 plot_gdf_column(
-    gdf,
-    "max_sample_count",
+    gdf=gdf,
+    column="max_sample_count",
     title="Open Ocean Sample Count (Since 7/19/2023)",
-    show_land_ocean=True,
     save_path=FIG_DIR / "max_sample_count.png",
     scale="log",
     use_cbar_label=False,
+    vmax=5000,
 )
 
 logger.info("Saving results to ShapeFile")
 (FIG_DIR / "sample_count").mkdir(exist_ok=True)
 gdf.to_file(FIG_DIR / "sample_count" / "data.shp")
+
+logger.info("Done")

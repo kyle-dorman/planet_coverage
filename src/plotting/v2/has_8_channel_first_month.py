@@ -39,7 +39,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.0) & (lats < 81.0)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -146,7 +146,7 @@ ORDER BY grid_id, month_start;
 """
 
 df = con.execute(query).fetchdf().set_index("grid_id")
-df = df[df.month_start < pd.Timestamp("2022-05-03")].copy()
+df = df[df.month_start < pd.Timestamp("2022-05-04")].copy()
 df["pct_8_channel"] = df.count_8_channel / df.sample_count
 
 logger.info("Queried monthly 8 channel samples")
@@ -162,9 +162,9 @@ agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
 gdf = gpd.GeoDataFrame(agg, geometry="geometry")
 
 plot_gdf_column(
-    gdf,
-    "month_start",
-    title="First Month with more than 50% 8 channel",
+    gdf=gdf,
+    column="month_start",
+    title="First Month w/ 8-channel > 50%",
     show_land_ocean=True,
     save_path=FIG_DIR / "first_month_with_half_8_channel.png",
     use_cbar_label=False,
@@ -173,3 +173,5 @@ plot_gdf_column(
 logger.info("Saving results to ShapeFile")
 (FIG_DIR / "data").mkdir(exist_ok=True)
 gdf.to_file(FIG_DIR / "data" / "data.shp")
+
+logger.info("Done")

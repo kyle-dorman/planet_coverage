@@ -40,7 +40,7 @@ def create_merged_grids(
     heuristics_df = pd.read_csv(base / "simulated_tidal_coverage_heuristics.csv").set_index("cell_id")
 
     logger.info(
-        "Loaded %d open‑ocean cells, %d coastal grid cells, and heuristic table with %d rows",
+        "Loaded %d open-ocean cells, %d coastal grid cells, and heuristic table with %d rows",
         len(query_df),
         len(grids_df),
         len(heuristics_df),
@@ -51,7 +51,7 @@ def create_merged_grids(
     hex_grid = hex_grid.to_crs(sinus_crs)
     hex_grid = hex_grid.rename(columns={"cell_id": "hex_id"})
 
-    logger.info("Generated %d equal‑area hexagons", len(hex_grid))
+    logger.info("Generated %d equal-area hexagons", len(hex_grid))
 
     # Assign hex_id to query_df and grid_df
     grids_df = assign_intersection_id(grids_df, hex_grid, "grid_id", "hex_id")
@@ -95,22 +95,23 @@ def plot_gdf_column(
     edgecolor: str = "black",
     linewidth: float = 0.15,
     show_coastlines: bool = False,
-    show_land_ocean: bool = False,
+    show_land_ocean: bool = True,
     show_grid: bool = False,
     title: Optional[str] = None,
+    title_fontsize: int = 20,
     use_cbar_label: bool = True,
     save_path: str | Path | None = None,
     show: bool = False,
     pad_fraction: float = 0.05,  # extra space around data bounds
     filter_bounds: bool = False,
     add_color_bar: bool = True,
-    ax: plt.Axes | None = None,  # existing axis → no per‑plot legend
+    ax: plt.Axes | None = None,  # existing axis → no per-plot legend
 ) -> None:
     """
     Plot a numeric column from a GeoDataFrame on a Cartopy map, zooming to the
     area where data exist.
 
-    If an existing Matplotlib Axes is supplied via `ax`, the function draws on that axis and skips adding a per‑plot colour bar so you can create a shared legend later.
+    If an existing Matplotlib Axes is supplied via `ax`, the function draws on that axis and skips adding a per-plot colour bar so you can create a shared legend later.
 
     `pad_fraction` adds a percentage of the data extent as padding so the data
     don’t touch the frame edge.
@@ -120,9 +121,9 @@ def plot_gdf_column(
 
     bins : Sequence[float] | None
         If provided, the data are coloured **discretely** using these bin
-        edges (left‑inclusive, right‑exclusive; last bin right‑inclusive).
+        edges (left-inclusive, right-exclusive; last bin right-inclusive).
         If ``bins`` is *None* and ``scale=="hist"``, the function will
-        auto‑generate 7 bins spanning *vmin…vmax* using either
+        auto-generate 7 bins spanning *vmin…vmax* using either
         ``np.linspace`` (linear) or ``np.logspace`` (log).
 
     For ``scale="log"``, features whose value is ``<= 0`` are plotted in gray so
@@ -173,7 +174,7 @@ def plot_gdf_column(
             return mdates.num2date(x).strftime("%Y-%m")
 
         formatter = ticker.FuncFormatter(_fmt)
-        locator = ticker.MaxNLocator(nbins=6)  # or mdates.MonthLocator()
+        locator = ticker.LinearLocator(numticks=5)
         valid_mask = ~nan_mask  # all non-NaN for datetime
         cmap = plt.get_cmap(cmap)  # type: ignore
     elif use_bins:
@@ -193,7 +194,7 @@ def plot_gdf_column(
         norm = colors.BoundaryNorm(bins, nbins)
         valid_mask = ~nan_mask
         formatter = ticker.ScalarFormatter()
-        locator = ticker.MaxNLocator(nbins=6)
+        locator = ticker.FixedLocator(locs=bins)
 
     else:
         cmap = plt.get_cmap(cmap)  # type: ignore
@@ -205,12 +206,16 @@ def plot_gdf_column(
 
             norm = colors.LogNorm(vmin=vmin, vmax=vmax)
             formatter = ticker.FuncFormatter(lambda y, _: f"{y:g}")
-            locator = ticker.LogLocator(base=10, numticks=10)
+            locator = ticker.LogLocator()
         else:
             valid_mask = ~nan_mask
             norm = colors.Normalize(vmin=vmin, vmax=vmax)
             formatter = ticker.ScalarFormatter()
-            locator = ticker.MaxNLocator(nbins=6)
+            if vmax is not None and vmin is not None and vmax - vmin > 10.0:
+                formatter = ticker.FuncFormatter(lambda y, _: f"{y:.0f}")
+            else:
+                formatter = ticker.FuncFormatter(lambda y, _: f"{y:.1f}")
+            locator = ticker.LinearLocator(numticks=7)
 
     # ------------------------------------------------------------------
     # Prepare figure / axis
@@ -244,6 +249,14 @@ def plot_gdf_column(
     gdf_valid = gdf.loc[valid_mask]
     gdf_invalid = gdf.loc[~valid_mask]  # ≤0 or NaN
 
+    if show_coastlines:
+        ax.coastlines(resolution="110m", linewidth=0.3)  # type: ignore
+    if show_grid:
+        ax.gridlines(draw_labels=False, linewidth=0.2)  # type: ignore
+    if show_land_ocean:
+        ax.add_feature(cartopy.feature.OCEAN, zorder=0)  # type: ignore
+        ax.add_feature(cartopy.feature.LAND, zorder=0)  # type: ignore
+
     if not gdf_invalid.empty:
         gdf_invalid.plot(
             ax=ax,
@@ -266,14 +279,6 @@ def plot_gdf_column(
             zorder=2,
         )
 
-    if show_coastlines:
-        ax.coastlines(resolution="110m", linewidth=0.3)  # type: ignore
-    if show_grid:
-        ax.gridlines(draw_labels=False, linewidth=0.2)  # type: ignore
-    if show_land_ocean:
-        ax.add_feature(cartopy.feature.OCEAN, zorder=0)  # type: ignore
-        ax.add_feature(cartopy.feature.LAND, zorder=0)  # type: ignore
-
     # Colour bar
     if add_color_bar:
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -285,22 +290,23 @@ def plot_gdf_column(
             orientation="vertical",
             shrink=0.65,
             pad=0.02,
+            ticks=locator,
+            format=formatter,
+            location="right",
         )
-
-        if use_bins:
-            assert bins is not None
-            cbar.set_ticks(bins)
-            cbar.set_ticklabels([f"{b:g}" for b in bins])
-        else:
-            cbar.formatter = formatter
-            cbar.locator = locator
-            cbar.update_ticks()
-
         if use_cbar_label:
             cbar.set_label(orig_column)
+        if not use_bins and not is_datetime:
+            assert vmin is not None
+            assert vmax is not None
+            # Explicitly set ticks for continuous non-datetime case
+            ticks = locator.tick_values(vmin, vmax)
+            ticks = [vmin] + [t for t in ticks if t > vmin and t < vmax] + [vmax]
+            cbar.set_ticks(ticks)
+            cbar.set_ticklabels([formatter(t, None) for t in ticks])
 
     if title:
-        ax.set_title(title, pad=20, fontsize=20)
+        ax.set_title(title, pad=title_fontsize, fontsize=title_fontsize)
 
     if save_path is not None:
         plt.savefig(save_path)
@@ -679,7 +685,7 @@ def make_max_daily_captures_query(year: int, valid_only: bool = False) -> str:
 
 
 # ----------------------------------------------------------------------
-# Query to build a per‑grid histogram of time‑between‑samples
+# Query to build a per-grid histogram of time-between-samples
 # ----------------------------------------------------------------------
 def make_dialy_time_between_hist_query(
     year: int,

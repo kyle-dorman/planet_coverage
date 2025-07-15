@@ -49,8 +49,7 @@ valid = (
 )
 grids_df = grids_df[valid].copy()
 
-
-pct = 90
+pct = 50
 FIG_DIR = BASE.parent / "figs_v2" / f"tide_{pct}"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -133,7 +132,7 @@ plot_gdf_column(
     gdf,
     "median_obs_high_tide_offset",
     title="High Tide Offset (m)",
-    show_land_ocean=True,
+    title_fontsize=15,
     ax=axes[1, 0],
     vmax=1.5,
     use_cbar_label=False,
@@ -142,7 +141,7 @@ plot_gdf_column(
     gdf,
     "median_obs_low_tide_offset",
     title="Low Tide Offset (m)",
-    show_land_ocean=True,
+    title_fontsize=15,
     ax=axes[1, 1],
     vmax=1.5,
     use_cbar_label=False,
@@ -151,13 +150,12 @@ plot_gdf_column(
     gdf,
     "median_tide_range_coverage",
     title="Tide Range Coverage (%)",
-    show_land_ocean=True,
+    title_fontsize=15,
     ax=axes[0, 1],
     vmin=0.0,
     vmax=1.0,
     use_cbar_label=False,
 )
-
 
 # Use human readable log scale edges
 bin_edges = np.array([0, 1, 2, 7, 14, 30, 60, 90, 180, 365], dtype=np.int32)
@@ -182,6 +180,7 @@ plot_gdf_column(
     gdf,
     "median_days_between",
     title=f"p{pct} Time Between Mid-Tide Samples",
+    title_fontsize=15,
     show_land_ocean=True,
     # vmax=180,
     ax=axes[0, 0],
@@ -189,11 +188,11 @@ plot_gdf_column(
     bins=plt_bin_edges.tolist(),
 )
 
-fig.suptitle("Tidal Coverage", fontsize=14)
-
 plt.savefig(FIG_DIR / "four_pannel.png", dpi=300)
 plt.close(fig)
 
 logger.info("Saving results to ShapeFile")
 (FIG_DIR / "hex_days_between").mkdir(exist_ok=True)
 gdf.to_file(FIG_DIR / "hex_days_between" / "data.shp")
+
+logger.info("Done")

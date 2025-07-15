@@ -310,7 +310,9 @@ def run():
                     #     vmin=1,
                     #     scale="log",
                     # )
-                    title = f"p{pct} Days Between {tide.capitalize()} Tide Samples (Year: {disp_year}, Valid: {valid_str.capitalize()}, Agg: Min)"
+                    title = f"p{pct} Days Between {
+                        tide.capitalize()} Tide Samples (Year: {disp_year}, Valid: {
+                        valid_str.capitalize()}, Agg: Min)"
                     plot_gdf_column(
                         gdf,
                         "min_days_between",
@@ -321,7 +323,9 @@ def run():
                         vmin=1,
                         scale="log",
                     )
-                    title = f"p{pct} Days Between {tide.capitalize()} Tide Samples (Year: {disp_year}, Valid: {valid_str.capitalize()}, Agg: Median)"
+                    title = f"p{pct} Days Between {
+                        tide.capitalize()} Tide Samples (Year: {disp_year}, Valid: {
+                        valid_str.capitalize()}, Agg: Median)"
                     plot_gdf_column(
                         gdf,
                         "median_days_between",

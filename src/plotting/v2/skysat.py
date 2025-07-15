@@ -38,7 +38,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 5.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.0) & (lats < 81.0)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -87,16 +87,17 @@ plot_gdf_column(
     gdf,
     "sum_sample_count",
     title="SkySat/Dove Intersection Counts",
-    show_land_ocean=True,
     save_path=FIG_DIR / "sum_sample_count.png",
     scale="log",
     use_cbar_label=False,
+    vmax=2200,
 )
 
 logger.info("Saving results to ShapeFile")
 (FIG_DIR / "hex_data").mkdir(exist_ok=True)
 gdf.to_file(FIG_DIR / "hex_data" / "data.shp")
 
-
 print("TOTAL SKYSAT/DOVE INTERSECTIONS")
 print(int(hex_df.sample_count.sum()))
+
+logger.info("Done")

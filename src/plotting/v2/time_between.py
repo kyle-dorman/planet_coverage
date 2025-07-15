@@ -42,7 +42,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.0) & (lats < 81.0)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -57,7 +57,7 @@ con.execute(
 )
 logger.info("Registered DuckDB view 'samples_all'")
 
-pct = 50
+pct = 90
 FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -112,9 +112,8 @@ def yearly_plots():
             gdf,
             "median_days_between",
             title=title,
-            show_land_ocean=True,
+            title_fontsize=15,
             save_path=FIG_DIR / f"median_days_between_{disp_year}.png",
-            # vmax=180,
             bins=plt_bin_edges.tolist(),
         )
 
@@ -255,7 +254,7 @@ def yearly_plots():
         gdf,
         "median_median_days_between",
         title=title,
-        show_land_ocean=True,
+        title_fontsize=15,
         save_path=FIG_DIR / "median_median_days_between.png",
         # vmax=180,
         bins=plt_bin_edges.tolist(),
@@ -357,3 +356,5 @@ def clear_pct_plots():
 
 yearly_plots()
 clear_pct_plots()
+
+logger.info("Done")
