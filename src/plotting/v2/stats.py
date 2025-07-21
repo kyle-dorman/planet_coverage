@@ -33,7 +33,7 @@ con = duckdb.connect()
 
 
 # ----------------------- Query Grids ----------------------------
-if True:
+def query_grid_stats():
     # path patterns
     f_pattern = "*/results/*/*/*/*/data.parquet"
     all_files_pattern = str(BASE / f_pattern)
@@ -124,100 +124,100 @@ if True:
     print(first_month_8_channel)
     print("")
 
+
 # ---------------------- Small Grids -------------------------
+def coastal_cell_stats():
+    # path patterns
+    f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
+    all_files_pattern = str(BASE / f_pattern)
 
-# path patterns
-f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
-all_files_pattern = str(BASE / f_pattern)
+    # Combined list used later when we search individual files
+    all_parquets = list(BASE.glob(f_pattern))
 
-# Combined list used later when we search individual files
-all_parquets = list(BASE.glob(f_pattern))
+    if not all_parquets:
+        logger.error("No parquet files found matching pattern %s", all_files_pattern)
+        raise FileNotFoundError("No parquet files found")
+    logger.info("Found %d small grid parquet files", len(all_parquets))
 
-if not all_parquets:
-    logger.error("No parquet files found matching pattern %s", all_files_pattern)
-    raise FileNotFoundError("No parquet files found")
-logger.info("Found %d small grid parquet files", len(all_parquets))
+    # Register a view for all files
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW samples_all AS
+        SELECT * FROM read_parquet('{all_files_pattern}');
+    """
+    )
+    logger.info("Registered DuckDB view 'samples_all'")
+
+    grid_ids = grids_df.index.to_list()
+    grid_tbl = pd.DataFrame({"grid_id": grid_ids})
+    con.register("grid_ids_tbl", grid_tbl)  # exposes it as a DuckDB view
+
+    query = """
+        SELECT
+            approx_count_distinct(id) AS sample_count
+        FROM samples_all AS s
+        JOIN grid_ids_tbl USING (grid_id)
+        WHERE
+            s.item_type        = 'PSScene'
+            AND s.coverage_pct > 0.5
+            AND acquired < '2024-12-01'
+    """
+
+    df = con.execute(query).fetchdf()
+
+    print("SAMPLE COUNT GRIDS WITHIN 20 KM OF SHORELINE")
+    total_sample_count = df.sample_count.iloc[0]
+    print(total_sample_count)
+    print("")
+
+    query = """
+        SELECT
+            approx_count_distinct(id) AS sample_count
+        FROM samples_all AS s
+        JOIN grid_ids_tbl USING (grid_id)
+        WHERE
+            s.item_type        = 'PSScene'
+            AND s.coverage_pct > 0.5
+            AND acquired < '2024-12-01'
+            AND s.publishing_stage = 'finalized'
+            AND s.quality_category = 'standard'
+            AND s.has_sr_asset
+            AND s.ground_control
+    """
+
+    df = con.execute(query).fetchdf()
+
+    print("VALID SAMPLE COUNT GRIDS WITHIN 20 KM OF SHORELINE")
+    valid_sample_count = df.sample_count.iloc[0]
+    print(valid_sample_count)
+    print(round(100.0 * valid_sample_count / total_sample_count, 1), "%")
+    print("")
+
+    query = """
+        SELECT
+            approx_count_distinct(id) AS sample_count
+        FROM samples_all AS s
+        JOIN grid_ids_tbl USING (grid_id)
+        WHERE
+            s.item_type        = 'PSScene'
+            AND s.coverage_pct > 0.5
+            AND acquired < '2024-12-01'
+            AND clear_percent    > 75.0
+            AND s.publishing_stage = 'finalized'
+            AND s.quality_category = 'standard'
+            AND s.has_sr_asset
+            AND s.ground_control
+    """
+
+    df = con.execute(query).fetchdf()
+
+    print("VALID SAMPLE COUNT (75% clear) GRIDS WITHIN 20 KM OF SHORELINE")
+    valid_sample_count = df.sample_count.iloc[0]
+    print(valid_sample_count)
+    print(round(100.0 * valid_sample_count / total_sample_count, 1), "%")
+    print("")
 
 
-# Register a view for all files
-con.execute(
-    f"""
-    CREATE OR REPLACE VIEW samples_all AS
-    SELECT * FROM read_parquet('{all_files_pattern}');
-"""
-)
-logger.info("Registered DuckDB view 'samples_all'")
-
-grid_ids = grids_df.index.to_list()
-grid_tbl = pd.DataFrame({"grid_id": grid_ids})
-con.register("grid_ids_tbl", grid_tbl)  # exposes it as a DuckDB view
-
-
-query = """
-    SELECT
-        approx_count_distinct(id) AS sample_count
-    FROM samples_all AS s
-    JOIN grid_ids_tbl USING (grid_id)
-    WHERE
-        s.item_type        = 'PSScene'
-        AND s.coverage_pct > 0.5
-        AND acquired < '2024-12-01'
-"""
-
-df = con.execute(query).fetchdf()
-
-print("SAMPLE COUNT GRIDS WITHIN 20 KM OF SHORELINE")
-total_sample_count = df.sample_count.iloc[0]
-print(total_sample_count)
-print("")
-
-
-query = """
-    SELECT
-        approx_count_distinct(id) AS sample_count
-    FROM samples_all AS s
-    JOIN grid_ids_tbl USING (grid_id)
-    WHERE
-        s.item_type        = 'PSScene'
-        AND s.coverage_pct > 0.5
-        AND acquired < '2024-12-01'
-        AND s.publishing_stage = 'finalized'
-        AND s.quality_category = 'standard'
-        AND s.has_sr_asset
-        AND s.ground_control
-"""
-
-df = con.execute(query).fetchdf()
-
-print("VALID SAMPLE COUNT GRIDS WITHIN 20 KM OF SHORELINE")
-valid_sample_count = df.sample_count.iloc[0]
-print(valid_sample_count)
-print(round(100.0 * valid_sample_count / total_sample_count, 1), "%")
-print("")
-
-
-query = """
-    SELECT
-        approx_count_distinct(id) AS sample_count
-    FROM samples_all AS s
-    JOIN grid_ids_tbl USING (grid_id)
-    WHERE
-        s.item_type        = 'PSScene'
-        AND s.coverage_pct > 0.5
-        AND acquired < '2024-12-01'
-        AND clear_percent    > 75.0
-        AND s.publishing_stage = 'finalized'
-        AND s.quality_category = 'standard'
-        AND s.has_sr_asset
-        AND s.ground_control
-"""
-
-df = con.execute(query).fetchdf()
-
-print("VALID SAMPLE COUNT (75% clear) GRIDS WITHIN 20 KM OF SHORELINE")
-valid_sample_count = df.sample_count.iloc[0]
-print(valid_sample_count)
-print(round(100.0 * valid_sample_count / total_sample_count, 1), "%")
-print("")
-
+query_grid_stats()
+coastal_cell_stats()
 logger.info("Done")
