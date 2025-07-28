@@ -72,7 +72,7 @@ def process_pair(
     grid_path: Path,
     query_path: Path,
     clear_thresh: float,
-    time_window: float,  # days
+    time_window_days: float,  # days
     time_of_day_window: float,  # hours  <-- NEW
     overlap_area: float,
     filter_coastal_area: bool,
@@ -94,7 +94,7 @@ def process_pair(
         Minimum overlap area in square meters.
     filter_coastal_area : bool
         If True, restrict SkySat frames to those intersecting coastal land areas (mainlands and islands).
-    time_window : float
+    time_window_days : float
         Maximum allowable difference in acquisition time (days) between Dove and SkySat.
     time_of_day_window : float
         Maximum allowable difference in clock time (hours) between the Dove and SkySat acquisitions.
@@ -162,7 +162,7 @@ def process_pair(
     d_pl = d_pl.with_columns(pl.col("acquired").cast(pl.Int64).alias("ts_ns"))
     ss_pl = ss_pl.with_columns(pl.col("acquired").cast(pl.Int64).alias("ts_ns"))
 
-    tolerance_ns = int(time_window * 24 * 3600 * 1e9)  # days → ns
+    tolerance_ns = int(time_window_days * 24 * 3600 * 1e9)  # days → ns
 
     # ------------------------------------------------------------------
     # 2) range join: ALL SkySat within ±tolerance
@@ -252,7 +252,7 @@ def process_pair(
     dss_joined["time_of_day_delta_sec"] = np.minimum(tod_delta, 86400 - tod_delta)
 
     overlapping = dss_joined[
-        (dss_joined.acquired_delta < pd.Timedelta(days=time_window))
+        (dss_joined.acquired_delta < pd.Timedelta(days=time_window_days))
         & (dss_joined.time_of_day_delta_sec < time_of_day_window * 3600)
         & (dss_joined.overlap_area > overlap_area)
     ].copy()
@@ -324,7 +324,7 @@ def process_pair(
 )
 @click.option("--clear-thresh", default=75.0, show_default=True, help="Minimum SkySat clear_percent.")
 @click.option(
-    "--time-window", default=2 / 24.0, show_default=True, help="Max |Δacquired| in DAYS between Dove and SkySat."
+    "--time-window-days", default=2 / 24.0, show_default=True, help="Max |Δacquired| in DAYS between Dove and SkySat."
 )
 @click.option(
     "--time-of-day-window",
@@ -347,7 +347,7 @@ def main(
     query_grids_path: Path,
     grid_file: str,
     clear_thresh: float,
-    time_window: float,
+    time_window_days: float,
     time_of_day_window: float,
     overlap_area: float,
     filter_coastal_area: bool,
@@ -374,7 +374,7 @@ def main(
                 grid_path,
                 query_grids_path,
                 clear_thresh,
-                time_window,
+                time_window_days,
                 time_of_day_window,
                 overlap_area,
                 filter_coastal_area,

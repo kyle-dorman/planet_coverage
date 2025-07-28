@@ -4,6 +4,8 @@ from pathlib import Path
 
 import duckdb
 import geopandas as gpd
+import matplotlib.pyplot as plt
+import pandas as pd
 
 from src.plotting.util import load_grids, plot_gdf_column
 
@@ -60,12 +62,19 @@ SELECT
     COUNT(DISTINCT (skysat_id)) AS sample_count
 FROM
     samples_all
+WHERE
+    dove_acquired < '2024-12-01'
+    AND dove_acquired > '2015-12-01'
 GROUP BY
     grid_id
 """
 
 df = con.execute(query).fetchdf()
 df.grid_id = df.grid_id.map(int)
+
+print("MAX SKYSAT/DOVE INTERSECTIONS GRID CELL")
+print(int(df.sample_count.max()))
+
 df = df.set_index("grid_id")
 hex_df = grids_df[["hex_id", "dist_km", "geometry"]].join(df, how="left")
 gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=hex_grid.crs)
@@ -83,6 +92,10 @@ agg = hex_df.groupby("hex_id").agg(
 agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
 gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=hex_grid.crs)
 
+print("MAX SKYSAT/DOVE INTERSECTIONS HEX CELL")
+print(gdf[gdf.sum_sample_count == gdf.sum_sample_count.max()])
+print(gdf[gdf.sum_sample_count == gdf.sum_sample_count.max()].geometry.centroid)
+
 plot_gdf_column(
     gdf,
     "sum_sample_count",
@@ -99,5 +112,37 @@ gdf.to_file(FIG_DIR / "hex_data" / "data.shp")
 
 print("TOTAL SKYSAT/DOVE INTERSECTIONS")
 print(int(hex_df.sample_count.sum()))
+
+
+# --- Plot intersections over time by month ---
+
+logger.info("Creating scatter plot of intersections over time by month")
+
+# Fetch date-wise data
+time_query = """
+SELECT
+    DATE_TRUNC('month', dove_acquired) AS month,
+    COUNT(DISTINCT skysat_id) AS intersection_count
+FROM
+    samples_all
+GROUP BY
+    month
+ORDER BY
+    month
+"""
+time_df = con.execute(time_query).fetchdf()
+time_df["month"] = pd.to_datetime(time_df["month"])
+
+# Plot
+plt.figure(figsize=(12, 6))
+plt.scatter(time_df["month"], time_df["intersection_count"], alpha=0.7)
+plt.title("Monthly SkySat/Dove Intersections Over Time")
+plt.xlabel("Month")
+plt.ylabel("Intersection Count")
+plt.grid(True)
+plt.tight_layout()
+plt.savefig(FIG_DIR / "monthly_intersections_scatter.png", dpi=300)
+plt.close()
+logger.info("Saved scatter plot to monthly_intersections_scatter.png")
 
 logger.info("Done")

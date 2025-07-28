@@ -37,14 +37,14 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
-MIN_DIST = 20.0
+MIN_DIST = 3.0
 lats = grids_df.centroid.y
 valid = (
     ~grids_df.is_land
     & ~grids_df.dist_km.isna()
     & (grids_df.dist_km < MIN_DIST)
-    & (lats > -81.0)
-    & (lats < 81.0)
+    & (lats > -81.5)
+    & (lats < 81.5)
     & ~grids_df.tide_range.isna()
 )
 grids_df = grids_df[valid].copy()
@@ -133,6 +133,7 @@ plot_gdf_column(
     "median_obs_high_tide_offset",
     title="High Tide Offset (m)",
     title_fontsize=15,
+    title_padsize=10,
     ax=axes[1, 0],
     vmax=1.5,
     use_cbar_label=False,
@@ -142,6 +143,7 @@ plot_gdf_column(
     "median_obs_low_tide_offset",
     title="Low Tide Offset (m)",
     title_fontsize=15,
+    title_padsize=10,
     ax=axes[1, 1],
     vmax=1.5,
     use_cbar_label=False,
@@ -151,6 +153,7 @@ plot_gdf_column(
     "median_tide_range_coverage",
     title="Tide Range Coverage (%)",
     title_fontsize=15,
+    title_padsize=10,
     ax=axes[0, 1],
     vmin=0.0,
     vmax=1.0,
@@ -179,8 +182,9 @@ plt_bin_edges = np.array([0, 4, 7, 14, 30, 60, 90, 366], dtype=np.int32)
 plot_gdf_column(
     gdf,
     "median_days_between",
-    title=f"p{pct} Time Between Mid-Tide Samples",
+    title=f"p{pct} Days Between Mid-Tide Samples",
     title_fontsize=15,
+    title_padsize=10,
     show_land_ocean=True,
     # vmax=180,
     ax=axes[0, 0],

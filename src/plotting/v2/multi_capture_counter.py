@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from src.plotting.util import (
     load_grids,
-    make_dialy_time_between_hist_query,
+    make_daily_time_between_hist_query,
     make_multiple_captures_query,
     plot_gdf_column,
 )
@@ -89,7 +89,7 @@ def plot_histogram():
     all_year_counts = np.zeros(len(minute_edges) - 1)
 
     for year in tqdm(range(2016, 2025), total=2025 - 2016):
-        query = make_dialy_time_between_hist_query(
+        query = make_daily_time_between_hist_query(
             year,
             bins=day_edges,
             valid_only=valid,

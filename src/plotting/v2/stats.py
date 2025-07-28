@@ -3,6 +3,7 @@ import warnings
 from pathlib import Path
 
 import duckdb
+import matplotlib.pyplot as plt
 import pandas as pd
 
 from src.plotting.util import load_grids
@@ -35,7 +36,7 @@ con = duckdb.connect()
 # ----------------------- Query Grids ----------------------------
 def query_grid_stats():
     # path patterns
-    f_pattern = "*/results/*/*/*/*/data.parquet"
+    f_pattern = "dove/results/*/*/*/*/data.parquet"
     all_files_pattern = str(BASE / f_pattern)
 
     # Combined list used later when we search individual files
@@ -128,7 +129,7 @@ def query_grid_stats():
 # ---------------------- Small Grids -------------------------
 def coastal_cell_stats():
     # path patterns
-    f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
+    f_pattern = "dove/coastal_results/*/*/*/coastal_points.parquet"
     all_files_pattern = str(BASE / f_pattern)
 
     # Combined list used later when we search individual files
@@ -218,6 +219,87 @@ def coastal_cell_stats():
     print("")
 
 
+def query_skysat_stats():
+    # path patterns
+    f_pattern = "skysat/results/*/*/*/*/data.parquet"
+    all_files_pattern = str(BASE / f_pattern)
+
+    # Combined list used later when we search individual files
+    all_parquets = list(BASE.glob(f_pattern))
+
+    if not all_parquets:
+        logger.error("No parquet files found matching pattern %s", all_files_pattern)
+        raise FileNotFoundError("No parquet files found")
+    logger.info("Found %d query parquet files", len(all_parquets))
+
+    # Register a view for all files
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW query_view AS
+        SELECT * FROM read_parquet('{all_files_pattern}');
+    """
+    )
+    logger.info("Registered DuckDB view 'query_view'")
+
+    query = """
+        SELECT
+            MIN(acquired)               AS first_sample_date,
+            MAX(acquired)               AS last_sample_date,
+            approx_count_distinct(id)   AS sample_count,
+        FROM query_view
+        WHERE
+            acquired < '2024-12-01'
+    """
+    df = con.execute(query).fetchdf()
+
+    print("FIRST SAMPLE DATE")
+    print(df.first_sample_date.iloc[0])
+    print("")
+
+    print("LAST SAMPLE DATE")
+    print(df.last_sample_date.iloc[0])
+    print("")
+
+    print("SAMPLE COUNT (Including Ocean)")
+    print(df.sample_count.iloc[0])
+    print("")
+
+    query = """
+        SELECT
+            approx_count_distinct(id)       AS sample_count,
+            DATE_TRUNC('year', acquired)   AS year,
+            satellite_id
+        FROM query_view
+        GROUP BY
+            satellite_id, year
+    """
+    df = con.execute(query).fetchdf()
+    df["year"] = pd.to_datetime(df["year"])
+
+    logger.info("Creating stacked bar chart of SkySat samples per year per satellite")
+
+    pivot_df = df.pivot_table(index="year", columns="satellite_id", values="sample_count", fill_value=0).sort_index()
+
+    plt.figure(figsize=(12, 6))
+    pivot_df.plot(kind="bar", stacked=True, colormap="tab20", width=1.0, edgecolor="none", figsize=(12, 6))
+
+    # Format x-axis as plain 4-digit year
+    ax = plt.gca()
+    ax.set_xticklabels([d.year for d in pivot_df.index])
+
+    plt.title("Yearly SkySat Samples per Satellite")
+    plt.xlabel("Year")
+    plt.ylabel("Sample Count")
+    plt.legend(title="Satellite ID", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.tight_layout()
+    plt.grid(True, axis="y")
+    output_path = BASE / "skysat_yearly_samples_stacked_bar.png"
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    logger.info(f"Saved stacked bar chart to {output_path}")
+
+
 query_grid_stats()
 coastal_cell_stats()
+query_skysat_stats()
 logger.info("Done")

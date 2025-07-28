@@ -99,6 +99,7 @@ def plot_gdf_column(
     show_grid: bool = False,
     title: Optional[str] = None,
     title_fontsize: int = 20,
+    title_padsize: int = 20,
     use_cbar_label: bool = True,
     save_path: str | Path | None = None,
     show: bool = False,
@@ -306,7 +307,7 @@ def plot_gdf_column(
             cbar.set_ticklabels([formatter(t, None) for t in ticks])
 
     if title:
-        ax.set_title(title, pad=title_fontsize, fontsize=title_fontsize)
+        ax.set_title(title, pad=title_padsize, fontsize=title_fontsize)
 
     if save_path is not None:
         plt.savefig(save_path)
@@ -687,7 +688,7 @@ def make_max_daily_captures_query(year: int, valid_only: bool = False) -> str:
 # ----------------------------------------------------------------------
 # Query to build a per-grid histogram of time-between-samples
 # ----------------------------------------------------------------------
-def make_dialy_time_between_hist_query(
+def make_daily_time_between_hist_query(
     year: int,
     bins: Sequence[float],
     *,
