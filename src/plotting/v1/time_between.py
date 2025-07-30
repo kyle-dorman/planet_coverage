@@ -261,8 +261,8 @@ for pct in [50, 95]:
             # ax.set_xticklabels([f"{edge:.0f}" for edge in bin_edges], rotation=45, ha="right")
             ax.set_title(f"{row['year']}")
             ax.tick_params(axis="both", labelsize=8)
-            ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
-            ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+            ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
+            ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
             if i == 0:
                 ax.legend()
 

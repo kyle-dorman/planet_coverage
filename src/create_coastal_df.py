@@ -8,6 +8,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import polars as pl
+import pvlib
+from pyproj import Transformer
 from shapely import wkb
 from tqdm import tqdm
 
@@ -48,6 +50,8 @@ SCHEMA = {
     "tide_height_bin": pl.Int32,
     "is_mid_tide": pl.Boolean,
     "has_tide_data": pl.Boolean,
+    "solar_time": pl.Datetime,
+    "solar_time_offset_seconds": pl.Float32,
 }
 
 
@@ -110,11 +114,6 @@ def process_file(
     assert grid_gdf.poly_area is not None
     assert grid_gdf.grid_center is not None
     dest = out_dir / "coastal_points.parquet"
-    if dest.exists():
-        import os
-
-        os.remove(dest)
-        # return
 
     count_df = planet_df.select(pl.len().alias("n_rows")).collect()
     n_rows = count_df["n_rows"][0]
@@ -134,7 +133,9 @@ def process_file(
     # --- find intersection of all grids and downloaded satellite captures
 
     # intersect image footprints with grid polygons
-    joined = gpd.overlay(grid_gdf[["grid_id", "geometry", "poly_area"]], satellite_gdf, how="intersection")
+    joined = gpd.overlay(
+        grid_gdf[["grid_id", "geometry", "poly_area", "lat", "lon"]], satellite_gdf, how="intersection"
+    )
 
     # remove any duplicate captures per grid_id/id combination
     joined = joined.drop_duplicates(subset=["grid_id", "id"]).rename(columns={"cell_id": "query_cell_id"})
@@ -182,9 +183,16 @@ def process_file(
     assert joined.grid_center.isna().sum() == 0
     joined["intersects_grid_centroid"] = joined.intersects(joined.grid_center)  # type: ignore
 
+    # Add solar time
+    solpos = pvlib.solarposition.get_solarposition(joined.acquired, joined.lat, joined.lon)
+    eot = pd.to_timedelta(solpos["equation_of_time"], unit="m").to_numpy()
+    lon_term = pd.to_timedelta(joined.lon / 15.0, unit="h").to_numpy()
+    joined["solar_time"] = joined.acquired + eot + lon_term
+    joined["solar_time_offset_seconds"] = (joined.solar_time - joined.solar_time.dt.normalize()).dt.total_seconds()
+
     # joined now has all columns from gdf + a `grid_id` and the index of the matched pt
     # Drop the extra index column that sjoin adds and the point geometry column
-    joined = joined.drop(columns=["poly_area", "geometry", "grid_center"])
+    joined = joined.drop(columns=["poly_area", "geometry", "grid_center", "lat", "lon"])
 
     # Convert to Polars (or pandas) to write out
     pl_out = pl.from_pandas(joined, schema_overrides=SCHEMA, include_index=False)
@@ -287,6 +295,10 @@ def main(
     gdf_coastal = gpd.read_file(coastal_grids_path).rename(columns={"cell_id": "grid_id"})
     gdf_coastal["poly_area"] = gdf_coastal.geometry.area
     gdf_coastal["grid_center"] = gdf_coastal.geometry.centroid
+    transformer = Transformer.from_crs(gdf_coastal.crs, "EPSG:4326", always_xy=True)
+    grid_points = transformer.transform(gdf_coastal.geometry.centroid.x, gdf_coastal.geometry.centroid.y)
+    gdf_coastal["lon"] = grid_points[0]
+    gdf_coastal["lat"] = grid_points[1]
 
     coast_tidal_grid_mapper = assign_intersection_id(
         gdf_coastal[["grid_id", "geometry"]],
