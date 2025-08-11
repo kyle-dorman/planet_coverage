@@ -2,12 +2,13 @@ import logging
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 from pyproj import Geod, Transformer
-from shapely import Point, box
+from shapely import box
 from shapely.geometry import Polygon
 
 # ---------------------------------------------------------------------------
-# Additional helpers for constructing equal‑area *hexagon* grids
+# Additional helpers for constructing equal-area *hexagon* grids
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,31 @@ def compute_step(degrees: float = 1.0) -> float:
     return distance_m
 
 
-def make_equal_area_grid(cell_size_m: float, crs: str) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+def create_safe_area(crs: str, step_size: float = 0.05, shrink_m: int = 10) -> Polygon:
+    transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+
+    # 0.05° step (≈5 km); +1 so both endpoints appear
+    lon = np.linspace(-180, 180, int(360 / step_size) + 1)
+    lat = np.linspace(-90, 90, int(180 / step_size) + 1)
+
+    ring = np.concatenate(
+        [
+            np.column_stack([lon, np.full(len(lon), -90)]),  # bottom edge  (lat = −90°)
+            np.column_stack([np.full(len(lat), 180), lat]),  # right edge   (lon =  180°)
+            np.column_stack([lon[::-1], np.full(len(lon), 90)]),  # top edge     (lat =  90°)
+            np.column_stack([np.full(len(lat), -180), lat[::-1]]),  # left edge    (lon = −180°)
+        ]
+    )
+
+    lon_sin, lat_sin = transformer.transform(ring[:, 0], ring[:, 1])
+    sinus_poly = Polygon(np.array([lon_sin, lat_sin]).T)
+    gdf_sinus = gpd.GeoDataFrame(geometry=[sinus_poly], crs=crs)
+    sinus_frame_shrunk = gdf_sinus.buffer(-shrink_m)
+
+    return sinus_frame_shrunk.geometry.iloc[0]  # type: ignore
+
+
+def make_equal_area_grid(cell_size_m: float, crs: str, keep_partial: bool = False) -> gpd.GeoDataFrame:
     transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
     wgs_transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
 
@@ -53,28 +78,37 @@ def make_equal_area_grid(cell_size_m: float, crs: str) -> tuple[gpd.GeoDataFrame
 
     # all 4 corner offsets
     offsets = [(-half, -half), (-half, half), (half, -half), (half, half)]
-    valid = np.ones(len(xx.ravel()), dtype=np.bool_)
+    valid = np.ones([4, len(xx.ravel())], dtype=np.bool_)
     valid_distance = np.ceil(cell_size_m * np.sqrt(2))
 
-    for xoff, yoff in offsets:
+    for i, (xoff, yoff) in enumerate(offsets):
         xpts = xx.ravel() + xoff
         ypts = yy.ravel() + yoff
         wgs_points = wgs_transformer.transform(xpts, ypts)
         crs_points2 = transformer.transform(*wgs_points)
 
         distances = np.hypot(crs_points2[0] - xpts, crs_points2[1] - ypts)
-        valid &= distances < valid_distance
+        valid[i] = distances < valid_distance
 
-    valid_pts = np.array((xx.ravel(), yy.ravel())).T[valid]
-    centers = [Point(x, y) for x, y in valid_pts]
-    gdf_pts = gpd.GeoDataFrame(geometry=centers, crs=crs)
-
+    all_valid = valid.all(axis=0)
+    valid_pts = np.array((xx.ravel(), yy.ravel())).T[all_valid]
     polys = [box(x - half, y - half, x + half, y + half) for x, y in valid_pts]
     grid_box = gpd.GeoDataFrame(geometry=polys, crs=crs)
-    grid_box["cell_id"] = grid_box.index
-    gdf_pts["cell_id"] = gdf_pts.index
 
-    return gdf_pts, grid_box
+    if keep_partial:
+        some_valid = valid.any(axis=0) & ~all_valid
+        valid_pts = np.array((xx.ravel(), yy.ravel())).T[some_valid]
+        polys = [box(x - half, y - half, x + half, y + half) for x, y in valid_pts]
+        grid_partial = gpd.GeoDataFrame(geometry=polys, crs=crs)
+        safe_poly = create_safe_area(crs=crs)
+        grid_partial["geometry"] = grid_partial.geometry.intersection(safe_poly)
+
+        grid_box = pd.concat([grid_box, grid_partial], ignore_index=True)
+        assert isinstance(grid_box, gpd.GeoDataFrame)
+
+    grid_box["cell_id"] = grid_box.index
+
+    return grid_box
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +119,7 @@ def _regular_hexagon(center_x: float, center_y: float, a: float) -> Polygon:
     Construct a corner-topped regular hexagon (6 vertices) centred on (x, y)
     with *side length* ``a`` in the *projected* CRS coordinates.
     """
-    # corner‑topped orientation: 0°, 60°, … 300°
+    # corner-topped orientation: 0°, 60°, … 300°
     angles = np.deg2rad([30, 90, 150, 210, 270, 330])
     verts = [(center_x + a * np.cos(th), center_y + a * np.sin(th)) for th in angles]
     return Polygon(verts)
@@ -93,7 +127,7 @@ def _regular_hexagon(center_x: float, center_y: float, a: float) -> Polygon:
 
 def _hex_side_from_equal_area(target_area: float) -> float:
     """
-    Given a target *square‑cell* area (``target_area`` = ``cell_size_m**2``),
+    Given a target *square-cell* area (``target_area`` = ``cell_size_m**2``),
     return the side length ``a`` for a regular hexagon with *equal area*.
 
     Area_hex = (3 * sqrt(3) / 2) * a²
@@ -102,19 +136,21 @@ def _hex_side_from_equal_area(target_area: float) -> float:
     return np.sqrt(2 * target_area / (3 * np.sqrt(3)))
 
 
-def make_equal_area_hex_grid(cell_size_m: float, crs: str) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+def make_equal_area_hex_grid(
+    cell_size_m: float, crs: str, shift_x: float = 0.0, shift_y: float = 0.0
+) -> gpd.GeoDataFrame:
     """
-    Generate a global grid of *equal‑area* corner‑topped hexagons whose area
-    equals that of a square ``cell_size_m`` × ``cell_size_m``.
+    Generate a global grid of *equal-area* corner-topped hexagons whose area
+    equals that of a square ``cell_size_m`` x ``cell_size_m``.
 
     Parameters
     ----------
     cell_size_m : float
-        Nominal square side‑length in metres whose *area* the hexagon will
+        Nominal square side-length in metres whose *area* the hexagon will
         match.
     crs : str
         Any PROJ string / EPSG code describing the *projected* CRS in which
-        the grid is built (e.g. an equal‑area world projection).
+        the grid is built (e.g. an equal-area world projection).
 
     Returns
     -------
@@ -129,7 +165,7 @@ def make_equal_area_hex_grid(cell_size_m: float, crs: str) -> tuple[gpd.GeoDataF
     # Compute hexagon geometry parameters
     target_area = cell_size_m**2
     a = _hex_side_from_equal_area(target_area)  # side length
-    vertical_spacing = 3 * a / 2  # row‑to‑row step
+    vertical_spacing = 3 * a / 2  # row-to-row step
     horizontal_spacing = np.sqrt(3) * a
     half_horizontal_spacing = horizontal_spacing / 2
 
@@ -141,7 +177,7 @@ def make_equal_area_hex_grid(cell_size_m: float, crs: str) -> tuple[gpd.GeoDataF
     minx, maxx = min(x_min, x_max), max(x_min, x_max)
     miny, maxy = min(y_min, y_max), max(y_min, y_max)
 
-    # Build centres in a “staggered” grid (odd rows shifted 0.75 × width)
+    # Build centres in a “staggered” grid (odd rows shifted 0.75 × width)
     centers_list = []
     row = 0
     y = miny + a  # start one side length above bottom
@@ -158,6 +194,8 @@ def make_equal_area_hex_grid(cell_size_m: float, crs: str) -> tuple[gpd.GeoDataF
     logger.info("Generating global hex grid: %d hexagon centres", len(centers_list))
 
     all_centers = np.array(centers_list)
+    all_centers[:, 0] += shift_x
+    all_centers[:, 1] += shift_y
 
     # all 6 corner offsets
     offsets = np.array(_regular_hexagon(0, 0, a).exterior.coords.xy).T
@@ -175,21 +213,17 @@ def make_equal_area_hex_grid(cell_size_m: float, crs: str) -> tuple[gpd.GeoDataF
 
     # Create GeoDataFrames
     centers = all_centers[valid]
-    pts_geom = [Point(x, y) for x, y in centers]
-    centers_gdf = gpd.GeoDataFrame(geometry=pts_geom, crs=crs)
-    centers_gdf["cell_id"] = centers_gdf.index
-
     hex_polys = [_regular_hexagon(x, y, a) for x, y in centers]
     hex_gdf = gpd.GeoDataFrame(geometry=hex_polys, crs=crs)
     hex_gdf["cell_id"] = hex_gdf.index
 
-    # (optional) validity check: ensure centres transform round‑trip cleanly
+    # (optional) validity check: ensure centres transform round-trip cleanly
     x_proj, y_proj = centers[:, 0], centers[:, 1]
     lon, lat = wgs_transformer.transform(x_proj, y_proj)
     x_back, y_back = transformer.transform(lon, lat)
     max_err = np.max(np.hypot(np.array(x_proj) - np.array(x_back), np.array(y_proj) - np.array(y_back)))
-    valid = max_err < (a * 0.1)  # 10 % tolerance
+    valid = max_err < (a * 0.1)  # 10 % tolerance
     if not valid:
-        logger.warning("CRS round‑trip error exceeds tolerance (max %.2f m)", max_err)
+        logger.warning("CRS round-trip error exceeds tolerance (max %.2f m)", max_err)
 
-    return centers_gdf, hex_gdf
+    return hex_gdf

@@ -186,8 +186,8 @@ ax.plot(
 )
 
 # Highlight p50 and p95
-ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
-ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
+ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
 
 ax.set_xlabel("Distance from Shore (km)")
 ax.set_ylabel("Cumulative Sample Count (%)")

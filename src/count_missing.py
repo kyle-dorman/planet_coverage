@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_grid_save_path(grid_save_dir: Path, index: int) -> Path:
-    hex_id = f"{index:06x}"  # unique 6‑digit hex, e.g. '0f1a2b'
+    hex_id = f"{index:06x}"  # unique 6-digit hex, e.g. '0f1a2b'
     d1, d2, d3 = hex_id[:2], hex_id[2:4], hex_id[4:6]
     grid_save_path = grid_save_dir / d1 / d2 / d3
     grid_save_path.mkdir(exist_ok=True, parents=True)

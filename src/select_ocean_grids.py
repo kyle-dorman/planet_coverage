@@ -132,7 +132,7 @@ def main(
 
     logger.info("Creating Grid")
     cell_size_m = compute_step(degree)
-    _, poly_grid = make_equal_area_grid(cell_size_m, crs)
+    poly_grid = make_equal_area_grid(cell_size_m, crs, keep_partial=True)
     logger.info(f"Created grid with {len(poly_grid)} points")
 
     # Convert to Dask GeoDataFrame

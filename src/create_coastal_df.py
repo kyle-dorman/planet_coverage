@@ -56,7 +56,7 @@ SCHEMA = {
 
 
 def get_save_path(base: Path, index: int) -> Path:
-    hex_id = f"{index:06x}"  # unique 6‑digit hex, e.g. '0f1a2b'
+    hex_id = f"{index:06x}"  # unique 6-digit hex, e.g. '0f1a2b'
     d1, d2, d3 = hex_id[:2], hex_id[2:4], hex_id[4:6]
     save_path = base / d1 / d2 / d3
     return save_path
@@ -114,6 +114,9 @@ def process_file(
     assert grid_gdf.poly_area is not None
     assert grid_gdf.grid_center is not None
     dest = out_dir / "coastal_points.parquet"
+
+    if dest.exists():
+        return
 
     count_df = planet_df.select(pl.len().alias("n_rows")).collect()
     n_rows = count_df["n_rows"][0]
@@ -239,7 +242,7 @@ def process_file(
     type=float,
     default=0.5,
     show_default=True,
-    help="Half-range (in meters) around mean tide used to flag ‘mid‑tide’ captures",
+    help="Half-range (in meters) around mean tide used to flag 'mid-tide' captures",
 )
 @click.option(
     "--num-procs",

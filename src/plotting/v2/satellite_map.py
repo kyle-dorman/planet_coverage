@@ -47,7 +47,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 robinson_crs = "ESRI:54030"
 display_crs = "EPSG:4326"
 cell_size_m = compute_step(3.0)
-_, hex_grid = make_equal_area_hex_grid(cell_size_m, robinson_crs)
+hex_grid = make_equal_area_hex_grid(cell_size_m, robinson_crs)
 hex_grid = hex_grid.to_crs(display_crs)
 hex_grid = hex_grid.rename(columns={"cell_id": "hex_id"})
 hex_grid = hex_grid.set_index("hex_id")
@@ -126,7 +126,7 @@ def plotplot(savedir, current, end):
 
 plotplot(FIG_DIR, min_date, max_date)
 assert False
-# regular for‑loop over each hours
+# regular for-loop over each hours
 for i, current in tqdm.tqdm(enumerate(date_list), total=len(date_list)):
     end = current + timedelta(hours=1)
     plotplot(img_dir, current, end)

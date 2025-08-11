@@ -79,7 +79,7 @@ def query_grid_stats():
 
 def plot_stats(df):
     """
-    Create a stacked‑bar chart for each item_type showing counts of missing
+    Create a stacked-bar chart for each item_type showing counts of missing
     attributes per year. Saves PNGs in BASE/plots and shows the plots.
     """
     categories = [

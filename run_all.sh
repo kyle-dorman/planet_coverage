@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-BASE="/Users/kyledorman/data/planet_coverage/count_missing"
+BASE="/Users/kyledorman/data/planet_coverage/points_30km"
 
 # Loop from 2013 to 2024
 for YEAR in {2013..2024}
@@ -23,7 +23,7 @@ do
         END_DATE="$((YEAR + 1))-12-01"
 
         # Run the Python script
-        python src/count_missing.py -c "$YAML_FILE" -s "$START_DATE" -e "$END_DATE"
+        python src/query_udms.py -c "$YAML_FILE" -s "$START_DATE" -e "$END_DATE"
         
     done
 done

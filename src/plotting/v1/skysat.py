@@ -70,7 +70,7 @@ df.grid_id = df.grid_id.map(int)
 df = df.set_index("grid_id")
 hex_df = grids_df[["hex_id"]].join(df, how="left").fillna({"sample_count": 0})
 
-# --- log‑scale histogram with human‑readable ticks --------------------
+# --- log-scale histogram with human-readable ticks --------------------
 fig, ax = plt.subplots(1, 1, figsize=(6, 4))
 sample_counts = hex_df["sample_count"].values
 # log scale needs positives
@@ -157,7 +157,7 @@ logger.info("Query finished")
 
 logger.info("Plotting Counts")
 
-# --- log‑scale histogram with human‑readable ticks --------------------
+# --- log-scale histogram with human-readable ticks --------------------
 fig, ax = plt.subplots(1, 1, figsize=(6, 4))
 sample_counts = hex_df["sample_count"].values
 # log scale needs positives
@@ -178,7 +178,7 @@ ax.set_xticklabels(
     ha="right",
 )
 ax.xaxis.set_minor_locator(NullLocator())
-ax.set_title("SkySat–Dove Pair Histogram (Filtered, Δtide < 0.1 m)")
+ax.set_title("SkySat–Dove Pair Histogram (Filtered, Δtide < 0.1 m)")
 ax.set_xlabel("Distinct pairs per grid cell")
 ax.set_ylabel("Number of grid cells")
 ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)

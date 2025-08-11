@@ -57,7 +57,7 @@ con.execute(
 )
 logger.info("Registered DuckDB view 'samples_all'")
 
-pct = 90
+pct = 50
 FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -212,8 +212,8 @@ def yearly_plots():
     )
     ax.xaxis.set_minor_locator(NullLocator())
     # ax.tick_params(axis="both", labelsize=8)
-    ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
-    ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+    ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
+    ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
     ax.legend()
 
     fig.supylabel("Cumulative Grid Cell %", fontsize=12)
@@ -320,6 +320,35 @@ def clear_pct_plots():
             label=label,
         )
 
+    # mid tide
+    valid_filter = """
+        AND publishing_stage = 'finalized'
+        AND quality_category = 'standard'
+        AND clear_percent    >= 75
+        AND is_mid_tide
+        and has_tide_data
+        AND has_sr_asset
+        AND ground_control
+    """
+    label = "clear=75%,mid_tide"
+    query = make_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
+
+    df = con.execute(query).fetchdf().set_index("grid_id")
+    hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({f"p{pct}_days_between": 365})
+    counts, _ = np.histogram(hex_df[f"p{pct}_days_between"], bin_edges)
+    cumsum = np.cumsum(counts)
+    total = cumsum[-1] if cumsum[-1] else 1.0  # prevent divide-by-zero
+    cumsum_pct = cumsum / total * 100.0  # → 0-100 %
+
+    ax.plot(
+        bin_right,
+        cumsum_pct,
+        marker="o",
+        linestyle="-",
+        color="orange",
+        label=label,
+    )
+
     ax.set_ylim(0, 100)
     ax.set_xscale("log")
     ax.set_xticks(bin_edges[1:])
@@ -330,8 +359,8 @@ def clear_pct_plots():
     )
     ax.xaxis.set_minor_locator(NullLocator())
     # ax.tick_params(axis="both", labelsize=8)
-    ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
-    ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+    ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
+    ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
     ax.legend()
 
     fig.supylabel("Cumulative Grid Cell %", fontsize=12)
@@ -354,7 +383,7 @@ def clear_pct_plots():
     logger.info("Done with clear % plots")
 
 
-yearly_plots()
+# yearly_plots()
 clear_pct_plots()
 
 logger.info("Done")

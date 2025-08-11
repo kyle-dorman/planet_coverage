@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib import colors, ticker
+from shapely import Polygon
 
 from src.gen_points_map import compute_step, make_equal_area_hex_grid
 from src.geo_util import assign_intersection_id
@@ -46,10 +47,20 @@ def create_merged_grids(
         len(heuristics_df),
     )
 
+    invalid_region: Polygon = (
+        gpd.read_file(shorelines / "invalid_region.geojson").to_crs(sinus_crs).geometry.iloc[0]
+    )  # type: ignore
+    grids_df = grids_df[~grids_df.within(invalid_region)].copy()
+
     cell_size_m = compute_step(hex_size)
-    _, hex_grid = make_equal_area_hex_grid(cell_size_m, robinson_crs)
+    hex_grid = make_equal_area_hex_grid(cell_size_m, robinson_crs, shift_x=55659.745397)
     hex_grid = hex_grid.to_crs(sinus_crs)
     hex_grid = hex_grid.rename(columns={"cell_id": "hex_id"})
+
+    inter = gpd.sjoin(hex_grid.to_crs(sinus_crs), grids_df)
+    counts = inter[["hex_id", "grid_id"]].groupby("hex_id").count()
+    hex_ids = counts[counts.grid_id > 10].index
+    hex_grid = hex_grid.set_index("hex_id").loc[hex_ids].reset_index()
 
     logger.info("Generated %d equal-area hexagons", len(hex_grid))
 
@@ -797,3 +808,13 @@ def make_daily_time_between_hist_query(
     WHERE delta_days IS NOT NULL
     AND delta_days <= {max_days}
     """
+
+
+if __name__ == "__main__":
+    bb = Path("/Users/kyledorman/data/planet_coverage/shorelines")
+    query_df, grids_df, hex_grid = create_merged_grids(
+        Path("/Users/kyledorman/data/planet_coverage/points_30km"), bb, 1.0
+    )
+    query_df.reset_index().to_file(bb / "merged_ocean_grids.gpkg")
+    grids_df.reset_index().to_file(bb / "merged_coastal_grids.gpkg")
+    hex_grid.reset_index().to_file(bb / "merged_hex_grids.gpkg")

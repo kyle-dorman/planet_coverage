@@ -119,8 +119,8 @@ def plot_cumsum(df: pd.DataFrame, valid_flag: bool, pct: float) -> None:
         ax.set_title(f"{tide.capitalize()} Tide - {row['year']}")
         ax.tick_params(axis="both", labelsize=8)
         # Highlight p50 and p95
-        ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
-        ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+        ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
+        ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
         if i == 0:
             ax.legend()
 

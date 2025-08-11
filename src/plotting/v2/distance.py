@@ -25,7 +25,7 @@ FIG_DIR = BASE.parent / "figs_v2" / "distance"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
-f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
+f_pattern = "dove/coastal_results/*/*/*/coastal_points.parquet"
 all_files_pattern = str(BASE / f_pattern)
 
 # Combined list used later when we search individual files
@@ -37,7 +37,7 @@ if not all_parquets:
 logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
-MIN_DIST = 35.0
+MIN_DIST = 60.0
 lats = grids_df.centroid.y
 valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid]
@@ -125,8 +125,8 @@ ax.plot(
 )
 
 # Highlight p50 and p95
-ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
-ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
+ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
 
 ax.set_xlabel("Distance from Shore (km)")
 ax.set_ylabel("Cumulative Sample Count (%)")

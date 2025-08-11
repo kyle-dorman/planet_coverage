@@ -7,7 +7,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-from matplotlib.ticker import MaxNLocator, NullLocator
+from matplotlib.ticker import MaxNLocator, NullLocator, PercentFormatter
 from tqdm import tqdm
 
 from src.plotting.util import (
@@ -33,7 +33,7 @@ FIG_DIR = BASE.parent / "figs_v2" / "multi_capture"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
-f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
+f_pattern = "dove/coastal_results/*/*/*/coastal_points.parquet"
 all_files_pattern = str(BASE / f_pattern)
 
 # Combined list used later when we search individual files
@@ -79,6 +79,7 @@ def plot_histogram():
 
     bins = np.floor(np.logspace(np.log10(1.0), np.log10(12.0 * 60), 10)).astype(np.int32)
     minute_edges = [0.1] + [round_up(n) for n in bins]
+    bin_right = minute_edges[1:]  # right edge of each bar
     day_edges = [m / 1440.0 for m in minute_edges]  # minutes → days
     valid = True
 
@@ -104,7 +105,7 @@ def plot_histogram():
         bins = bins[order]
         counts = counts[order]
 
-        all_year_counts += counts[1:-1]  # skip the <0.1‑min bin
+        all_year_counts += counts[1:-1]  # skip the <0.1-min bin
 
     logger.info("Query finished")
 
@@ -116,7 +117,7 @@ def plot_histogram():
         constrained_layout=True,
     )
 
-    # ── build centres & widths (skip the <1‑minute bin) ────────────────────
+    # ── build centres & widths (skip the <1-minute bin) ────────────────────
     widths = np.diff(minute_edges)
     widths[0] = widths[1]  # shrink the first visible bar
     centers = np.array([right - w / 2 for right, w in zip(minute_edges[1:], widths)])
@@ -148,6 +149,39 @@ def plot_histogram():
     plt.savefig(FIG_DIR / "histogram_time_between_samples.png")
     plt.close(fig)
 
+    # ── Cumulative distribution on a separate figure ───────────────────────
+    total = float(all_year_counts.sum())
+    if total <= 0:
+        logger.warning("No counts accumulated; skipping CDF plot")
+        return
+
+    cdf = np.cumsum(all_year_counts) / total
+
+    fig2, ax2 = plt.subplots(1, 1, figsize=(6, 4), constrained_layout=True)
+
+    ax2.plot(bin_right, cdf, linewidth=2, linestyle="-", zorder=4, label="CDF")
+
+    # match histogram x-axis styling
+    ax2.set_xscale("log")
+    ax2.set_xticks(minute_edges)
+    ax2.set_xticklabels([f"{b:g}" for b in minute_edges[1:]])
+    ax2.xaxis.set_minor_locator(NullLocator())
+
+    # percent on y-axis
+    ax2.set_ylim(0.0, 1.0)
+    ax2.yaxis.set_major_formatter(PercentFormatter(1.0))
+    ax2.grid(axis="both", linestyle="--", alpha=0.7, zorder=0)
+
+    ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
+    ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+
+    fig2.supylabel("Cumulative % of samples", fontsize=12)
+    fig2.supxlabel("Time Between Samples (minutes)", fontsize=12)
+    fig2.suptitle("Cumulative Distribution: Time Between Same-Day Samples", fontsize=14)
+
+    plt.savefig(FIG_DIR / "cumsum_time_between_samples.png")
+    plt.close(fig2)
+
 
 def plot_geo():
     year = 2023
@@ -175,7 +209,7 @@ def plot_geo():
     )
 
 
-plot_geo()
-# plot_histogram()
+# plot_geo()
+plot_histogram()
 
 logger.info("Done")

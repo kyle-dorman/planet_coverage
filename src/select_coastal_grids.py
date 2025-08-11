@@ -14,14 +14,17 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree  # type: ignore
-from shapely import MultiLineString
-from shapely.ops import linemerge
+from shapely import MultiPolygon, get_coordinates
 from shapely.prepared import prep
 
 from src.gen_points_map import compute_step, make_equal_area_grid
-from src.geo_util import load_coastal, preprocess_geometry
+from src.geo_util import load_coastal
 
 logger = logging.getLogger(__name__)
+
+
+SEGMENIZE_M = 1000
+SIMPLIFY_2 = 100
 
 
 def filter_partition(box_grid: gpd.GeoDataFrame, coastal: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -68,11 +71,11 @@ def save_points(df: gpd.GeoDataFrame, output_path: str) -> None:
     help="Path to small islands GeoPackage",
 )
 @click.option(
-    "--antarctica",
-    "antarctica_geojson",
+    "--ignore-region",
+    "ignore_region_geojson",
     type=click.Path(exists=True),
     required=True,
-    help="Path to antarctica GeoJson",
+    help="Path to the region to ignore.",
 )
 @click.option("--sinus-crs", default="ESRI:54008", show_default=True, help="Sinusoidal CRS code for grid")
 @click.option(
@@ -101,7 +104,7 @@ def main(
     mainlands_gpkg: str,
     big_islands_gpkg: str,
     small_islands_gpkg: str,
-    antarctica_geojson: str,
+    ignore_region_geojson: str,
     sinus_crs: str,
     degrees: float,
     pre_simplify_tol: float,
@@ -110,36 +113,71 @@ def main(
     # Determine partitions
     partitions = min(partitions, mp.cpu_count() - 1)
 
-    antarctica = gpd.read_file(antarctica_geojson)
-    assert antarctica.crs is not None
+    t0 = time.perf_counter()
+    logger.info("Building Grid Cells …")
+    cell_size_m = compute_step(degrees)
+    box_grid = make_equal_area_grid(cell_size_m, sinus_crs)
+    ignore_region = gpd.read_file(ignore_region_geojson)
+    # Filter out the North East Russia area.
+    box_grid = box_grid[~box_grid.to_crs(ignore_region.crs).within(ignore_region.geometry.iloc[0])]  # type: ignore
+    # Convert to Dask GeoDataFrame
+    dask_grid: dgpd.GeoDataFrame = dgpd.from_geopandas(box_grid, npartitions=partitions)
+    logger.info("Grid Cells built in %.2f s", time.perf_counter() - t0)
+
+    # Filter partitions
+    t0 = time.perf_counter()
+    logger.info("Filtering grid in parallel using prepared geometry…")
+    # Load and prepare data
+    coastal = load_coastal(coastal_path, sinus_crs)
+    filtered = dask_grid.map_partitions(
+        filter_partition,
+        coastal,
+        meta=dask_grid._meta,
+    )
+    logger.info("Computing filtered points")
+    coastal_grids: gpd.GeoDataFrame = filtered.compute()
+    logger.info("Partition filtering + compute finished in %.2f s", time.perf_counter() - t0)
+    logger.info("Filtered point count: %d", len(coastal_grids))
 
     t0 = time.perf_counter()
     logger.info("Reading mainlands GeoPackage %s", mainlands_gpkg)
     mldf = gpd.read_file(mainlands_gpkg)
-    mldf = preprocess_geometry(mldf, proj_crs=sinus_crs, tol=pre_simplify_tol)
+    mldf.geometry = mldf.buffer(0)
+    mldf = mldf.to_crs(sinus_crs)
+    mldf.geometry = mldf.geometry.simplify(pre_simplify_tol, preserve_topology=True)
+    invalid = ~mldf.is_valid
+    mldf.loc[invalid, "geometry"] = mldf.geometry[invalid].buffer(0)
     logger.info(
-        "Loaded & preprocessed %d mainland polygons in %.2f s",
+        "Loaded & preprocessed %d mainland polygons in %.2f s",
         len(mldf),
         time.perf_counter() - t0,
     )
 
     t0 = time.perf_counter()
-    logger.info("Reading big‑islands GeoPackage %s", big_islands_gpkg)
+    logger.info("Reading big-islands GeoPackage %s", big_islands_gpkg)
     bidf = gpd.read_file(big_islands_gpkg)
-    bidf = preprocess_geometry(bidf, proj_crs=sinus_crs, tol=pre_simplify_tol)
+    bidf.geometry = bidf.buffer(0)
+    bidf = bidf.to_crs(sinus_crs)
+    bidf.geometry = bidf.geometry.simplify(pre_simplify_tol, preserve_topology=True)
+    invalid = ~bidf.is_valid
+    bidf.loc[invalid, "geometry"] = bidf.geometry[invalid].buffer(0)
     logger.info(
-        "Loaded & preprocessed %d big‑island polygons in %.2f s",
+        "Loaded & preprocessed %d big-island polygons in %.2f s",
         len(bidf),
         time.perf_counter() - t0,
     )
 
     t0 = time.perf_counter()
-    logger.info("Reading big‑islands GeoPackage %s", big_islands_gpkg)
+    logger.info("Reading small-islands GeoPackage %s", big_islands_gpkg)
     sidf = gpd.read_file(small_islands_gpkg)
-    sidf = preprocess_geometry(sidf, proj_crs=sinus_crs, tol=pre_simplify_tol)
+    sidf.geometry = sidf.buffer(0)
+    sidf = sidf.to_crs(sinus_crs)
+    sidf.geometry = sidf.geometry.simplify(pre_simplify_tol, preserve_topology=True)
+    invalid = ~sidf.is_valid
+    sidf.loc[invalid, "geometry"] = sidf.geometry[invalid].buffer(0)
     logger.info(
-        "Loaded & preprocessed %d small‑island polygons in %.2f s",
-        len(bidf),
+        "Loaded & preprocessed %d small-island polygons in %.2f s",
+        len(sidf),
         time.perf_counter() - t0,
     )
 
@@ -149,57 +187,43 @@ def main(
         pd.concat([mldf.geometry, bidf.geometry], ignore_index=True),
         crs=sinus_crs,
     ).union_all()
-    simp_land_union = land_union.simplify(500, preserve_topology=True)
-    coast_lines: MultiLineString = linemerge(simp_land_union.boundary)  # type: ignore
+    simp_land_union: MultiPolygon = land_union.simplify(SIMPLIFY_2, preserve_topology=True)  # type: ignore
+    invalids = []
+    valids = []
+    for poly in simp_land_union.geoms:
+        if not poly.is_valid:
+            invalids.append(poly)
+        else:
+            valids.append(poly)
+    invalid_df = gpd.GeoDataFrame(geometry=invalids, crs=sinus_crs)
+    invalid_df.geometry = invalid_df.geometry.buffer(0)
+    simp_land_union: MultiPolygon = MultiPolygon(valids + invalid_df.geometry.tolist()).buffer(0)  # type: ignore
+    logger.info("Land union built in %.2f s", time.perf_counter() - t0)
+
+    t0 = time.perf_counter()
+    logger.info("Building Coastal Points Tree …")
     coast_pts = []
-    for coast_line in coast_lines.geoms:
-        coast_pts.extend(coast_line.coords)
-    coast_xy = np.array([(p[0], p[1]) for p in coast_pts])
+    for poly in simp_land_union.geoms:
+        coast_pts.append(get_coordinates(poly.boundary.segmentize(SEGMENIZE_M)))
+    coast_xy = np.concatenate(coast_pts)
     tree = cKDTree(coast_xy)
-    logger.info("Land union built in %.2f s", time.perf_counter() - t0)
-
-    # Load and prepare data
-    coastal = load_coastal(coastal_path, sinus_crs)
-    cell_size_m = compute_step(degrees)
-    _, box_grid = make_equal_area_grid(cell_size_m, sinus_crs)
-
-    # Convert to Dask GeoDataFrame
-    t0 = time.perf_counter()
-    logger.info("Converting grid to Dask GeoDataFrame with %d partitions", partitions)
-    dask_grid: dgpd.GeoDataFrame = dgpd.from_geopandas(box_grid, npartitions=partitions)
-    logger.info("Converted to Dask GeoDataFrame in %.2f s", time.perf_counter() - t0)
-
-    # Filter partitions
-    t0 = time.perf_counter()
-    logger.info("Filtering grid in parallel using prepared geometry…")
-    filtered = dask_grid.map_partitions(
-        filter_partition,
-        coastal,
-        meta=dask_grid._meta,
-    )
-    logger.info("Computing filtered points")
-    coastal_grids: gpd.GeoDataFrame = filtered.compute()
-    logger.info("Partition filtering + compute finished in %.2f s", time.perf_counter() - t0)
-    logger.info("Filtered point count: %d", len(coastal_grids))
-
-    logger.info("Finding Antartic Grids")
-    antarctica_grids = box_grid.loc[
-        box_grid.to_crs(antarctica.crs).intersects(antarctica.geometry.union_all(method="coverage"))
-        & ~box_grid.index.isin(coastal_grids.index)
-    ].copy()
-    logger.info(f"Found {len(antarctica_grids)} Antartic Grids")
+    logger.info("Coastal Points Tree built in %.2f s", time.perf_counter() - t0)
 
     # ------------------------------------------------------------------
     #  Compute land flag + distance in parallel with Dask
     # ------------------------------------------------------------------
     t0 = time.perf_counter()
+    logger.info("Computing Coastal Grid Distances …")
     # pre-compute centroids array
     centers = coastal_grids.geometry.centroid
     cent_xy = np.column_stack((centers.x.values, centers.y.values))  # type: ignore
 
     # nearest neighbour query  (returns (distance, index))
     dists, _ = tree.query(cent_xy, workers=-1)  # parallel threads, SciPy ≥1.9
+    logger.info("Coastal Grid Distances calculated in %.2f s", time.perf_counter() - t0)
 
+    t0 = time.perf_counter()
+    logger.info("Computing Land Grid Overlaps …")
     pts_df = coastal_grids.copy()
     pts_df.geometry = pts_df.geometry.centroid
 
@@ -207,12 +231,18 @@ def main(
     binter = coastal_grids.sjoin(bidf, how="inner", predicate="within").cell_id.unique()
     minter = coastal_grids.sjoin(mldf, how="inner", predicate="within").cell_id.unique()
     land_ids = np.unique(np.concatenate([sinter, binter, minter]))
+    logger.info("Coastal Grid - Land Overlap calculated in %.2f s", time.perf_counter() - t0)
 
+    t0 = time.perf_counter()
+    logger.info("Computing Coastal Grid Overlaps …")
     sinter = pts_df.sjoin(sidf, how="inner", predicate="within").cell_id.unique()
     binter = pts_df.sjoin(bidf, how="inner", predicate="within").cell_id.unique()
     minter = pts_df.sjoin(mldf, how="inner", predicate="within").cell_id.unique()
     coastal_ids = np.unique(np.concatenate([sinter, binter, minter]))
+    logger.info("Coastal Grid - CoastLine Overlap calculated in %.2f s", time.perf_counter() - t0)
 
+    t0 = time.perf_counter()
+    logger.info("Computing Coastal Grid - Small Island Distances …")
     snearest = (
         gpd.sjoin_nearest(
             pts_df[["geometry", "cell_id"]],
@@ -224,6 +254,7 @@ def main(
         .sort_values(by=["cell_id", "dist"])
         .drop_duplicates(subset=["cell_id"])
     )
+    logger.info("Coastal Grid - Small Island Distances calculated in %.2f s", time.perf_counter() - t0)
 
     pts_df["dist_km"] = dists / 1000
     pts_df["sdist_km"] = dists.max() / 1000
@@ -237,15 +268,8 @@ def main(
     coastal_grids.loc[coastal_grids.is_coast, "dist_km"] = 0.0
     coastal_grids.loc[coastal_grids.dist_km > 50, "dist_km"] = 50
 
-    antarctica_grids["dist_km"] = np.nan
-    antarctica_grids["is_land"] = False
-    antarctica_grids["is_coast"] = False
-
-    coastal_grids_df = pd.concat([coastal_grids, antarctica_grids], ignore_index=False)
-    coastal_grids = gpd.GeoDataFrame(coastal_grids_df, geometry="geometry", crs=sinus_crs)
-
     logger.info(
-        "Land flag + distance computed for %d rows in %.2f s",
+        "Land flag + distance computed for %d rows in %.2f s",
         len(coastal_grids),
         time.perf_counter() - t0,
     )

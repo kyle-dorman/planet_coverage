@@ -41,12 +41,12 @@ def load_gdf(pth: Path | str, crs: str) -> gpd.GeoDataFrame:
 
 @lru_cache(maxsize=1)
 def _load_grids(path: str) -> gpd.GeoDataFrame:
-    """Cache coastal grids in‑process to avoid re‑reading on each call."""
+    """Cache coastal grids in-process to avoid re-reading on each call."""
     return gpd.read_file(path)
 
 
 def get_save_path(base: Path, year: int, index: int) -> Path:
-    hex_id = f"{index:06x}"  # unique 6‑digit hex, e.g. '0f1a2b'
+    hex_id = f"{index:06x}"  # unique 6-digit hex, e.g. '0f1a2b'
     d1, d2, d3 = hex_id[:2], hex_id[2:4], hex_id[4:6]
     save_path = base / str(year) / d1 / d2 / d3
     return save_path
@@ -178,7 +178,7 @@ def process_pair(
     dss_joined["acquired_delta"] = dss_joined.dove_acquired - dss_joined.skysat_acquired
     dss_joined["overlap_area"] = dss_joined.geometry.area
 
-    # ── clock‑time difference (mod 24 h) ────────────────────────────────────
+    # ── clock-time difference (mod 24 h) ────────────────────────────────────
     dove_tod_sec = (
         dss_joined.dove_acquired.dt.hour * 3600
         + dss_joined.dove_acquired.dt.minute * 60
@@ -217,7 +217,7 @@ def process_pair(
     assert not overlap_with_grid_id.grid_id.isna().any()
 
     # ── normalise dtypes so they can be written to GPKG ────────────────────────
-    # GeoPackage cannot handle micro‑second timedeltas, so turn them into seconds
+    # GeoPackage cannot handle micro-second timedeltas, so turn them into seconds
     overlap_with_grid_id["acquired_delta_sec"] = overlap_with_grid_id["acquired_delta"].dt.total_seconds()
     overlap_with_grid_id.drop(columns="acquired_delta", inplace=True)
 

@@ -26,7 +26,7 @@ all_files_pattern = str(BASE / f_pattern)
 all_parquets = list(BASE.glob(f_pattern))
 
 GRID_ID = 31565
-hex_id = f"{GRID_ID:06x}"  # unique 6‑digit hex, e.g. '0f1a2b'
+hex_id = f"{GRID_ID:06x}"  # unique 6-digit hex, e.g. '0f1a2b'
 d1, d2, d3 = hex_id[:2], hex_id[2:4], hex_id[4:6]
 GRID_PATH = BASE / "dove" / "results" / "2024" / d1 / d2 / d3
 FILE = GRID_PATH / "ocean.parquet"

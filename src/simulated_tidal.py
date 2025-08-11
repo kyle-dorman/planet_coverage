@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 # compute_tide_info
 #
 # Given a single grid cell id and its centroid geometry, simulate one full
-# year of 1‑minute tide elevations; bin heights, compute satellite offsets,
-# subsample by satellite‑specific stride, and return summary statistics
-# (median / 95th‑percentile days‑between passes, counts),
-# and a second dict of per‑cell tidal heuristics (min/max/mean/std, etc.).
+# year of 1-minute tide elevations; bin heights, compute satellite offsets,
+# subsample by satellite-specific stride, and return summary statistics
+# (median / 95th-percentile days-between passes, counts),
+# and a second dict of per-cell tidal heuristics (min/max/mean/std, etc.).
 #
 # The function relies on globals (minutes, NBINS, SENTINEL_TIME, …) that are
 # initialised in `main()` so it can be pickled/executed inside a Pool worker.
@@ -71,8 +71,8 @@ def compute_tide_info(
     tide_range = tide_max - tide_min
 
     # ------------------------------------------------------------------
-    # Build quantile‑based bins so each bin holds ≈ 1/nbins of the samples
-    # (equal‑frequency bins instead of equal‑width across the numeric range)
+    # Build quantile-based bins so each bin holds ≈ 1/nbins of the samples
+    # (equal-frequency bins instead of equal-width across the numeric range)
     # ------------------------------------------------------------------
     q_edges = np.linspace(0.0, 1.0, nbins + 1)
     height_edges = np.quantile(tide_elevations, q_edges)
@@ -109,7 +109,7 @@ def compute_tide_info(
     MINUTES_IN_DAY = 24 * 60 - 1  # less 1 bc rounding
     tides_df = tides_df.groupby("solar_date", group_keys=False).filter(  # keep the original order
         lambda grp: len(grp) >= MINUTES_IN_DAY
-    )  # keep only days with ≥ N samples
+    )  # keep only days with ≥ N samples
 
     groups = [
         ("planet", "planet_offset", 1),
@@ -119,10 +119,10 @@ def compute_tide_info(
     search_ranges = [
         (0, "low"),
         (nbins - 1, "high"),
-        ("mid", "mid"),  # use special string key for mid‑tide
+        ("mid", "mid"),  # use special string key for mid-tide
     ]
 
-    # mean tide and mid‑tide boolean mask
+    # mean tide and mid-tide boolean mask
     mean_tide = tides_df.tide_height.mean()
     tides_df["is_mid_tide"] = np.abs(tides_df.tide_height - mean_tide) <= mid_delta
 
@@ -157,7 +157,7 @@ def compute_tide_info(
                 is_height = df.is_mid_tide
             else:
                 is_height = df.height_bin == height
-            # reset to a fresh 0…N‑1 integer index; the original DatetimeIndex
+            # reset to a fresh 0…N-1 integer index; the original DatetimeIndex
             # is no longer needed and there is only one level
             tide_match = df[is_height].copy().reset_index(drop=True)
 
@@ -173,7 +173,7 @@ def compute_tide_info(
             out[f"{satname}_{height_name}_days_between_p95"] = float(full_diffs.quantile(0.95))  # type: ignore
             out[f"{satname}_{height_name}_count"] = int(is_height.sum())
 
-    # ---- per‑cell tidal heuristics ----
+    # ---- per-cell tidal heuristics ----
     heur: Dict[str, Any] = {
         "cell_id": int(cell_id),
         "tide_min": float(tide_elevations.min()),
@@ -210,12 +210,12 @@ def _star_compute(args):
     help="Directory with GOT/FES tide constituents",
 )
 @click.option(
-    "--start-date", type=str, default="2023-12-01T00:00", show_default=True, help="Start of simulation (UTC, ISO‑8601)"
+    "--start-date", type=str, default="2023-12-01T00:00", show_default=True, help="Start of simulation (UTC, ISO-8601)"
 )
 @click.option(
-    "--end-date", type=str, default="2024-12-01T00:00", show_default=True, help="End of simulation (UTC, ISO‑8601)"
+    "--end-date", type=str, default="2024-12-01T00:00", show_default=True, help="End of simulation (UTC, ISO-8601)"
 )
-@click.option("--nbins", type=int, default=10, show_default=True, help="Number of equal‑width tide‑height bins")
+@click.option("--nbins", type=int, default=10, show_default=True, help="Number of equal-width tide-height bins")
 @click.option("--sentinel-stride", type=int, default=5, show_default=True, help="Stride (days) for Sentinel sampling")
 @click.option("--landsat-stride", type=int, default=8, show_default=True, help="Stride (days) for Landsat sampling")
 @click.option(
@@ -223,7 +223,7 @@ def _star_compute(args):
     type=float,
     default=0.5,
     show_default=True,
-    help="Half-width (in metres) of the mid‑tide band around the mean tide.",
+    help="Half-width (in metres) of the mid-tide band around the mean tide.",
 )
 @click.option("--processes", type=int, default=None, help="Number of worker processes (defaults to CPU count)")
 @click.option(
@@ -259,7 +259,7 @@ def main(
     end_ts = np.datetime64(end_date)
 
     # ------------------------------------------------------------------ #
-    # 1.  Load and pre‑filter geometry layers
+    # 1.  Load and pre-filter geometry layers
     # ------------------------------------------------------------------ #
     logger.info("Loading ocean grids and coastline layers")
     ocean_grids = gpd.read_file(Path(base_dir) / "ocean_grids.gpkg")
