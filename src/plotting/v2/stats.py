@@ -137,6 +137,45 @@ def coastal_cell_stats():
         & (pl.col("coverage_pct") > 0.5)
         & pl.col("grid_id").is_in(all_grid_ids)
     )
+
+    df = filtered.select(
+        [
+            pl.col("id").approx_n_unique().alias("image_count"),
+            pl.col("id")
+            .filter(
+                (pl.col("publishing_stage") == "finalized")
+                & (pl.col("quality_category") == "standard")
+                & pl.col("has_sr_asset")
+                & pl.col("ground_control")
+            )
+            .approx_n_unique()
+            .alias("valid_image_count"),
+            pl.col("id")
+            .filter(
+                (pl.col("publishing_stage") == "finalized")
+                & (pl.col("quality_category") == "standard")
+                & pl.col("has_sr_asset")
+                & pl.col("ground_control")
+                & (pl.col("clear_percent") > 75.0)
+            )
+            .approx_n_unique()
+            .alias("clear_image_count"),
+        ]
+    ).collect()
+
+    print("IMAGE COUNT GRIDS WITHIN 20 KM OF SHORELINE")
+    print(df["image_count"][0])
+    print("")
+    print("VALID IMAGE COUNT GRIDS WITHIN 20 KM OF SHORELINE")
+    print(df["valid_image_count"][0])
+    print(round(100.0 * df["valid_image_count"][0] / df["image_count"][0], 1), "%")
+    print("")
+
+    print("VALID IMAGE COUNT (75% clear) GRIDS WITHIN 20 KM OF SHORELINE")
+    print(df["clear_image_count"][0])
+    print(round(100.0 * df["clear_image_count"][0] / df["image_count"][0], 1), "%")
+    print("")
+
     df = filtered.select(
         [
             pl.len().alias("sample_count"),

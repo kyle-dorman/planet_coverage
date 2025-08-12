@@ -25,7 +25,7 @@ FIG_DIR = BASE.parent / "figs_v2" / "skysat_dove_2_hr"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
-f_pattern = "skysat_dove_v2/*/*/*/*/data.parquet"
+f_pattern = "skysat_dove/*/*/*/*/data.parquet"
 all_files_pattern = str(BASE / f_pattern)
 
 # Combined list used later when we search individual files
@@ -43,6 +43,16 @@ lats = grids_df.centroid.y
 valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid].copy()
 
+assert grids_df.crs is not None
+inter = gpd.sjoin(
+    hex_grid.to_crs(grids_df.crs).reset_index()[["geometry", "hex_id"]], grids_df.reset_index()[["geometry", "grid_id"]]
+)
+counts = inter[["hex_id", "grid_id"]].groupby("hex_id").count()
+hex_ids = counts[counts.grid_id > 10].index
+hex_grid = hex_grid.loc[hex_ids]
+
+logger.info("Loaded grid dataframes")
+
 # --- Connect to DuckDB ---
 con = duckdb.connect()
 
@@ -59,7 +69,7 @@ logger.info("Registered DuckDB view 'samples_all'")
 query = """
 SELECT
     grid_id,
-    COUNT(DISTINCT (skysat_id)) AS sample_count
+    approx_count_distinct(skysat_id) AS sample_count
 FROM
     samples_all
 WHERE
@@ -76,7 +86,7 @@ print("MAX SKYSAT/DOVE INTERSECTIONS GRID CELL")
 print(int(df.sample_count.max()))
 
 df = df.set_index("grid_id")
-hex_df = grids_df[["hex_id", "dist_km", "geometry"]].join(df, how="left")
+hex_df = grids_df[["hex_id", "geometry"]].join(df, how="left").fillna(0.0)
 gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=hex_grid.crs)
 
 logger.info("Saving results to ShapeFile")
@@ -103,7 +113,6 @@ plot_gdf_column(
     save_path=FIG_DIR / "sum_sample_count.png",
     scale="log",
     use_cbar_label=False,
-    vmax=2200,
 )
 
 logger.info("Saving results to ShapeFile")
@@ -122,7 +131,7 @@ logger.info("Creating scatter plot of intersections over time by month")
 time_query = """
 SELECT
     DATE_TRUNC('month', dove_acquired) AS month,
-    COUNT(DISTINCT skysat_id) AS intersection_count
+    approx_count_distinct(skysat_id) AS intersection_count
 FROM
     samples_all
 GROUP BY

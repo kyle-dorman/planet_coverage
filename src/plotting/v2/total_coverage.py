@@ -37,9 +37,18 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
+# lats = grids_df.centroid.y
+valid = grids_df.dist_km < MIN_DIST  # & ~grids_df.is_land & ~grids_df.dist_km.isna() & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid].copy()
+
+assert grids_df.crs is not None
+inter = gpd.sjoin(
+    hex_grid.to_crs(grids_df.crs).reset_index()[["geometry", "hex_id"]], grids_df.reset_index()[["geometry", "grid_id"]]
+)
+counts = inter[["hex_id", "grid_id"]].groupby("hex_id").count()
+hex_grid["grid_count"] = 0.0
+hex_grid.loc[counts.index, "grid_count"] = counts.grid_id
+
 logger.info("Loaded grid dataframes")
 
 # --- Connect to DuckDB ---
@@ -75,14 +84,14 @@ def dove_coverage():
 
     logger.info("Query finished")
 
-    hex_df = grids_df[["geometry", "hex_id"]].join(df, how="left")
+    grids_data_df = grids_df.join(df, how="left").fillna(0.0)
 
     logger.info("Plotting Counts")
-    agg = hex_df.groupby("hex_id").agg(
+    agg = grids_data_df.groupby("hex_id").agg(
         median_count=("sample_count", "median"),
         max_count=("sample_count", "max"),
     )
-    agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
+    agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
     gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
     plot_gdf_column(
@@ -90,9 +99,9 @@ def dove_coverage():
         column="median_count",
         title="Median PlanetScope Sample Count (12/2015-12/2024)",
         title_fontsize=15,
-        vmin=10,
-        vmax=5500,
-        save_path=FIG_DIR / "median.png",
+        # vmin=10,
+        # vmax=5500,
+        save_path=FIG_DIR / "median_dove.png",
         use_cbar_label=False,
     )
 
@@ -101,7 +110,7 @@ def dove_coverage():
     gdf.to_file(FIG_DIR / "hex_data" / "data.shp")
 
     (FIG_DIR / "grid_data").mkdir(exist_ok=True)
-    gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=grids_df.crs)
+    gdf = gpd.GeoDataFrame(grids_data_df, geometry="geometry", crs=grids_df.crs)
     gdf.to_file(FIG_DIR / "grid_data" / "data.shp")
 
 
@@ -125,14 +134,14 @@ def skysat_coverage():
 
     logger.info("Query finished")
 
-    hex_df = grids_df[["geometry", "hex_id", "dist_km"]].join(df, how="left")
+    grids_data_df = grids_df.join(df, how="left").fillna(0.0)
 
     logger.info("Plotting Counts")
-    agg = hex_df.groupby("hex_id").agg(
+    agg = grids_data_df.groupby("hex_id").agg(
         sum_count=("sample_count", "sum"),
         max_count=("sample_count", "max"),
     )
-    agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
+    agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
     gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
     plot_gdf_column(
@@ -142,8 +151,19 @@ def skysat_coverage():
         title_fontsize=15,
         scale="log",
         # vmin=10,
-        vmax=4500,
+        # vmax=4500,
         save_path=FIG_DIR / "sky_sat_sum.png",
+        use_cbar_label=False,
+    )
+    plot_gdf_column(
+        gdf=gdf,
+        column="max_count",
+        title="Max SkySat Sample Count (12/2015-12/2024)",
+        title_fontsize=15,
+        scale="log",
+        # vmin=10,
+        # vmax=4500,
+        save_path=FIG_DIR / "sky_sat_max.png",
         use_cbar_label=False,
     )
 
@@ -152,11 +172,11 @@ def skysat_coverage():
     gdf.to_file(FIG_DIR / "hex_data" / "data.shp")
 
     (FIG_DIR / "skysat_grid_data").mkdir(exist_ok=True)
-    gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=grids_df.crs)
+    gdf = gpd.GeoDataFrame(grids_data_df, geometry="geometry", crs=grids_df.crs)
     gdf.to_file(FIG_DIR / "grid_data" / "data.shp")
 
 
 dove_coverage()
-# skysat_coverage()
+skysat_coverage()
 
 logger.info("Done")
