@@ -16,7 +16,7 @@ warnings.filterwarnings(
     "ignore",
     message="invalid value encountered in intersection",
     category=RuntimeWarning,
-    module=r"shapely\..*",  # regex → only shut up Shapely’s call
+    module=r"shapely\..*",  # regex → only shut up Shapely's call
 )
 
 SCHEMA = {
@@ -382,7 +382,7 @@ def main(
         )
 
     if not tasks:
-        click.echo("No valid SkySat–Dove pairs found.")
+        click.echo("No valid SkySat-Dove pairs found.")
         return
 
     nproc = min(cpu_count(), nproc, len(tasks))

@@ -153,7 +153,7 @@ bounds AS (        -------------------------------------------------------------
 ),
 
 monthly AS (       ----------------------------------------------------------------------
-    /* 3️⃣  regular month-by-month counts within each grid’s window */
+    /* 3️⃣  regular month-by-month counts within each grid's window */
     SELECT
         s.grid_id,
         DATE_TRUNC('month', s.acquired)                  AS month_start,

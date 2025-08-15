@@ -115,7 +115,7 @@ def plot_gdf_column(
     If an existing Matplotlib Axes is supplied via `ax`, the function draws on that axis and skips adding a per-plot colour bar so you can create a shared legend later.
 
     `pad_fraction` adds a percentage of the data extent as padding so the data
-    don’t touch the frame edge.
+    don't touch the frame edge.
 
     scale : {"linear", "log", "hist"}
         Controls the colormap normalization. "hist" triggers discrete binning.

@@ -297,6 +297,6 @@ def query_skysat_stats():
 
 
 # query_grid_stats()
-coastal_cell_stats()
-# query_skysat_stats()
+# coastal_cell_stats()
+query_skysat_stats()
 logger.info("Done")

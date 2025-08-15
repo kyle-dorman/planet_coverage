@@ -4,6 +4,7 @@ from pathlib import Path
 
 import duckdb
 import geopandas as gpd
+import numpy as np
 
 from src.plotting.util import load_grids, plot_gdf_column
 
@@ -90,8 +91,11 @@ def dove_coverage():
     agg = grids_data_df.groupby("hex_id").agg(
         median_count=("sample_count", "median"),
         max_count=("sample_count", "max"),
+        sum_count=("sample_count", "sum"),
     )
     agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
+    for key in ["median_count", "max_count", "sum_count"]:
+        agg.loc[agg.sum_count == 0, key] = np.nan
     gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
     plot_gdf_column(
@@ -99,8 +103,8 @@ def dove_coverage():
         column="median_count",
         title="Median PlanetScope Sample Count (12/2015-12/2024)",
         title_fontsize=15,
-        # vmin=10,
-        # vmax=5500,
+        vmin=10,
+        vmax=3000,
         save_path=FIG_DIR / "median_dove.png",
         use_cbar_label=False,
     )
@@ -134,7 +138,17 @@ def skysat_coverage():
 
     logger.info("Query finished")
 
-    grids_data_df = grids_df.join(df, how="left").fillna(0.0)
+    near_grids_df = grids_df[(grids_df.dist_km < 4.0) & ~grids_df.is_land]
+    grids_data_df = near_grids_df.join(df, how="left").fillna(0.0)
+
+    print("% Grids with atleast 1 samples")
+    print(round(100 * (grids_data_df.sample_count > 0).sum() / len(grids_data_df), 2))
+
+    print("% Grids with atleast 5 samples")
+    print(round(100 * (grids_data_df.sample_count > 4).sum() / len(grids_data_df), 2))
+
+    print("% Grids with atleast 100 samples")
+    print(round(100 * (grids_data_df.sample_count > 99).sum() / len(grids_data_df), 2))
 
     logger.info("Plotting Counts")
     agg = grids_data_df.groupby("hex_id").agg(
@@ -142,6 +156,8 @@ def skysat_coverage():
         max_count=("sample_count", "max"),
     )
     agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
+    for key in ["sum_count", "max_count"]:
+        agg.loc[agg.sum_count == 0, key] = np.nan
     gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
     plot_gdf_column(
@@ -162,7 +178,7 @@ def skysat_coverage():
         title_fontsize=15,
         scale="log",
         # vmin=10,
-        # vmax=4500,
+        vmax=1800,
         save_path=FIG_DIR / "sky_sat_max.png",
         use_cbar_label=False,
     )
@@ -176,7 +192,7 @@ def skysat_coverage():
     gdf.to_file(FIG_DIR / "grid_data" / "data.shp")
 
 
-dove_coverage()
+# dove_coverage()
 skysat_coverage()
 
 logger.info("Done")

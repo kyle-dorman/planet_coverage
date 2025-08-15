@@ -5,6 +5,7 @@ from pathlib import Path
 import duckdb
 import geopandas as gpd
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from src.plotting.util import load_grids, plot_gdf_column
@@ -38,18 +39,14 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
-MIN_DIST = 5.0
+MIN_DIST = 4.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
+valid = (grids_df.dist_km < MIN_DIST) & (
+    ~grids_df.is_land
+)  # . & (lats > -81.5) & (lats < 81.5) & ~grids_df.is_land & ~grids_df.dist_km.isna()
 grids_df = grids_df[valid].copy()
 
-assert grids_df.crs is not None
-inter = gpd.sjoin(
-    hex_grid.to_crs(grids_df.crs).reset_index()[["geometry", "hex_id"]], grids_df.reset_index()[["geometry", "grid_id"]]
-)
-counts = inter[["hex_id", "grid_id"]].groupby("hex_id").count()
-hex_ids = counts[counts.grid_id > 10].index
-hex_grid = hex_grid.loc[hex_ids]
+LA_ONLY = gpd.read_file(SHORELINES / "la.geojson")
 
 logger.info("Loaded grid dataframes")
 
@@ -69,7 +66,7 @@ logger.info("Registered DuckDB view 'samples_all'")
 query = """
 SELECT
     grid_id,
-    approx_count_distinct(skysat_id) AS sample_count
+    COUNT(skysat_id) AS sample_count
 FROM
     samples_all
 WHERE
@@ -82,12 +79,36 @@ GROUP BY
 df = con.execute(query).fetchdf()
 df.grid_id = df.grid_id.map(int)
 
-print("MAX SKYSAT/DOVE INTERSECTIONS GRID CELL")
-print(int(df.sample_count.max()))
-
 df = df.set_index("grid_id")
-hex_df = grids_df[["hex_id", "geometry"]].join(df, how="left").fillna(0.0)
+hex_df = grids_df[["hex_id", "geometry", "dist_km"]].join(df, how="left").fillna(0.0)
 gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=hex_grid.crs)
+
+print("MAX SKYSAT/DOVE INTERSECTIONS GRID CELL")
+print(gdf[gdf.sample_count == gdf.sample_count.max()])
+print(gdf[gdf.sample_count == gdf.sample_count.max()].geometry.centroid)
+
+print("% Grids with atleast 1 samples")
+print(round(100 * (gdf.sample_count > 0).sum() / len(gdf)))
+
+print("% Grids with atleast 5 samples")
+print(round(100 * (gdf.sample_count > 4).sum() / len(gdf)))
+
+la_gdf = gdf[gdf.intersects(LA_ONLY.geometry.iloc[0])]  # type: ignore
+plot_gdf_column(
+    la_gdf,
+    "sample_count",
+    figsize=(6, 4),
+    title="SkySat/Dove Intersection Counts - Southern California",
+    save_path=FIG_DIR / "la_sample_count.png",
+    scale="log",
+    vmax=200,
+    filter_bounds=True,
+    pad_fraction=0.0,
+    use_cbar_label=False,
+    linewidth=0.05,
+    title_fontsize=10,
+    title_padsize=10,
+)
 
 logger.info("Saving results to ShapeFile")
 (FIG_DIR / "grid_data").mkdir(exist_ok=True)
@@ -100,6 +121,8 @@ agg = hex_df.groupby("hex_id").agg(
     sum_sample_count=("sample_count", "sum"),
 )
 agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
+for key in ["sum_sample_count", "max_sample_count", "median_sample_count"]:
+    agg.loc[agg.sum_sample_count == 0, key] = np.nan
 gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=hex_grid.crs)
 
 print("MAX SKYSAT/DOVE INTERSECTIONS HEX CELL")
@@ -109,9 +132,19 @@ print(gdf[gdf.sum_sample_count == gdf.sum_sample_count.max()].geometry.centroid)
 plot_gdf_column(
     gdf,
     "sum_sample_count",
-    title="SkySat/Dove Intersection Counts",
+    title="SkySat/Dove Intersection Counts (Sum)",
     save_path=FIG_DIR / "sum_sample_count.png",
     scale="log",
+    vmax=2500,
+    use_cbar_label=False,
+)
+plot_gdf_column(
+    gdf,
+    "max_sample_count",
+    title="SkySat/Dove Intersection Counts (Max)",
+    save_path=FIG_DIR / "max_sample_count.png",
+    scale="log",
+    vmax=450,
     use_cbar_label=False,
 )
 
