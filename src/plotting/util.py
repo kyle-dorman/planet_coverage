@@ -318,7 +318,85 @@ def plot_gdf_column(
         plt.close(fig)  # type: ignore
 
 
-def make_time_between_query(year: int, pct: int, valid_only: bool, extra_filter: str | None = None) -> str:
+def make_solar_time_between_query(year: int, pct: int, valid_only: bool, extra_filter: str | None = None) -> str:
+    """
+    Build the fiscal-year query for a single 12-month window.
+    """
+    # ------------------------------------------------------------------
+    # Compute end date = start + 1 year  (no extra deps needed)
+    # ------------------------------------------------------------------
+    start_dt = datetime(year, 12, 1).date()
+    end_dt = start_dt.replace(year=start_dt.year + 1)
+    end_date = end_dt.isoformat()
+    start_date = start_dt.isoformat()
+
+    valid_filter = (
+        """
+        AND publishing_stage = 'finalized'
+        AND quality_category = 'standard'
+        AND clear_percent    > 75.0
+        AND has_sr_asset
+        AND ground_control
+    """
+        if valid_only
+        else ""
+    )
+    if extra_filter is None:
+        extra_filter = ""
+
+    return f"""
+    WITH rows AS (                       -- 1️⃣  all real samples in the window
+        SELECT
+            grid_id,
+            DATE_TRUNC('day', solar_time) AS ts
+        FROM samples_all
+        WHERE
+            item_type    = 'PSScene'
+            AND coverage_pct > 0.5
+            AND solar_time BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+            {valid_filter}
+            {extra_filter}
+        GROUP BY grid_id, ts
+    ),
+
+    bounds AS (                         -- 2️⃣  add the end-marker
+        -- one row per grid for the window END
+        SELECT DISTINCT
+            grid_id,
+            DATE_TRUNC('day', TIMESTAMP '{end_date}') AS ts
+        FROM rows
+    ),
+
+    ordered AS (                        -- 3️⃣  combine & order in time
+        SELECT grid_id, ts FROM rows
+        UNION ALL
+        SELECT grid_id, ts FROM bounds
+    ),
+
+    deltas AS (                         -- 4️⃣  Δt between consecutive rows
+        SELECT
+            grid_id,
+            CAST(date_diff('day',
+                LAG(ts) OVER (PARTITION BY grid_id ORDER BY ts),
+                ts
+            ) AS DOUBLE) AS days_between
+        FROM ordered
+    )
+
+    -- 6️⃣  percentile per grid
+    SELECT
+        grid_id,
+        quantile_cont(days_between, 0.{pct}) AS p{pct}_days_between
+    FROM deltas
+    WHERE days_between IS NOT NULL
+    GROUP BY grid_id
+    ORDER BY grid_id;
+    """
+
+
+def make_solar_time_between_hist_query(
+    year: int, bins: Sequence[float], valid_only: bool, extra_filter: str | None = None
+) -> str:
     """
     Build the fiscal-year query for a single 12-month window.
     """
@@ -330,6 +408,85 @@ def make_time_between_query(year: int, pct: int, valid_only: bool, extra_filter:
     end_dt = start_dt.replace(year=start_dt.year + 1)
     end_date = end_dt.isoformat()
     start_date = start_dt.isoformat()
+
+    edges_sql = "LIST_VALUE(" + ", ".join(f"{b}" for b in bins) + ")"
+
+    valid_filter = (
+        """
+        AND publishing_stage = 'finalized'
+        AND quality_category = 'standard'
+        AND clear_percent    > 75.0
+        AND has_sr_asset
+        AND ground_control
+    """
+        if valid_only
+        else ""
+    )
+    if extra_filter is None:
+        extra_filter = ""
+
+    return f"""
+    WITH rows AS (                       -- 1️⃣  all real samples in the window
+        SELECT
+            grid_id,
+            DATE_TRUNC('day', solar_time) AS ts
+        FROM samples_all
+        WHERE
+            item_type    = 'PSScene'
+            AND coverage_pct > 0.5
+            AND solar_time BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+            {valid_filter}
+            {extra_filter}
+        GROUP BY grid_id, ts
+    ),
+
+    bounds AS (                         -- 2️⃣  add the end-marker
+        -- one row per grid for the window END
+        SELECT DISTINCT
+            grid_id,
+            DATE_TRUNC('day', TIMESTAMP '{end_date}') AS ts
+        FROM rows
+    ),
+
+    ordered AS (                        -- 3️⃣  combine & order in time
+        SELECT grid_id, ts FROM rows
+        UNION ALL
+        SELECT grid_id, ts FROM bounds
+    ),
+
+    deltas AS (                         -- 4️⃣  Δt between consecutive rows
+        SELECT
+            grid_id,
+            CAST(date_diff('day',
+                LAG(ts) OVER (PARTITION BY grid_id ORDER BY ts),
+                ts
+            ) AS DOUBLE) AS days_between
+        FROM ordered
+    )
+
+    SELECT
+        histogram(
+            days_between,
+            {edges_sql}
+        ) AS bucket
+    FROM deltas
+    WHERE days_between IS NOT NULL
+    """
+
+
+def make_time_between_query(year: int, pct: int, valid_only: bool, hours: int, extra_filter: str | None = None) -> str:
+    """
+    Build the fiscal-year query for a single 12-month window.
+    """
+
+    # ------------------------------------------------------------------
+    # Compute end date = start + 1 year  (no extra deps needed)
+    # ------------------------------------------------------------------
+    start_dt = datetime(year, 12, 1).date()
+    end_dt = start_dt.replace(year=start_dt.year + 1)
+    end_date = end_dt.isoformat()
+    start_date = start_dt.isoformat()
+    day_filter = round(hours / 24.0, 3)
 
     valid_filter = (
         """
@@ -390,10 +547,10 @@ def make_time_between_query(year: int, pct: int, valid_only: bool, extra_filter:
         FROM ordered
     ),
 
-    filtered AS (                       -- 5️⃣  keep only gaps ≥ 12 h
+    filtered AS (                       -- 5️⃣  keep only gaps ≥ day_filter
         SELECT grid_id, days_between
         FROM deltas
-        WHERE days_between >= 0.5
+        WHERE days_between >= {day_filter}
     )
 
     -- 6️⃣  percentile per grid
@@ -408,7 +565,7 @@ def make_time_between_query(year: int, pct: int, valid_only: bool, extra_filter:
 
 
 def make_time_between_hist_query(
-    year: int, bins: Sequence[float], valid_only: bool, extra_filter: str | None = None
+    year: int, bins: Sequence[float], valid_only: bool, hours: int, extra_filter: str | None = None
 ) -> str:
     """
     Build the fiscal-year query for a single 12-month window.
@@ -421,6 +578,7 @@ def make_time_between_hist_query(
     end_dt = start_dt.replace(year=start_dt.year + 1)
     end_date = end_dt.isoformat()
     start_date = start_dt.isoformat()
+    day_filter = round(hours / 24.0, 3)
 
     edges_sql = "LIST_VALUE(" + ", ".join(f"{b}" for b in bins) + ")"
 
@@ -483,10 +641,10 @@ def make_time_between_hist_query(
         FROM ordered
     ),
 
-    filtered AS (                       -- 5️⃣  keep only gaps ≥ 12 h
+    filtered AS (                       -- 5️⃣  keep only gaps ≥ day_filter
         SELECT grid_id, days_between
         FROM deltas
-        WHERE days_between >= 0.5
+        WHERE days_between >= {day_filter}
     )
 
     SELECT

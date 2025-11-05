@@ -11,7 +11,14 @@ from matplotlib import pyplot as plt
 from matplotlib.ticker import NullLocator
 from tqdm import tqdm
 
-from src.plotting.util import load_grids, make_time_between_hist_query, make_time_between_query, plot_gdf_column
+from src.plotting.util import (
+    load_grids,
+    make_solar_time_between_hist_query,
+    make_solar_time_between_query,
+    make_time_between_hist_query,
+    make_time_between_query,
+    plot_gdf_column,
+)
 
 warnings.filterwarnings("ignore")  # hide every warning
 
@@ -58,7 +65,12 @@ con.execute(
 logger.info("Registered DuckDB view 'samples_all'")
 
 pct = 50
-FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}"
+hours = 12
+solar = False
+if solar:
+    FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}_solar_time"
+else:
+    FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}_pct_{hours}_hours"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 
@@ -79,7 +91,10 @@ def yearly_plots():
     for year in tqdm(range(start_year, end_year), total=end_year - start_year):
         disp_year = year + 1
 
-        query = make_time_between_hist_query(year, bin_edges.tolist(), valid)
+        if solar:
+            query = make_solar_time_between_hist_query(year, bin_edges.tolist(), valid)
+        else:
+            query = make_time_between_hist_query(year, bin_edges.tolist(), valid, hours)
         hist_dict = con.execute(query).fetchall()[0][0]
 
         counts = np.array(list(hist_dict.values()))
@@ -90,7 +105,10 @@ def yearly_plots():
         counts = counts[order]
         all_year_counts += counts[1:]  # skip the <min bin
 
-        query = make_time_between_query(year, pct, valid)
+        if solar:
+            query = make_solar_time_between_query(year, pct, valid)
+        else:
+            query = make_time_between_query(year, pct, valid, hours=hours)
 
         df = con.execute(query).fetchdf().set_index("grid_id")
         hex_df = grids_df[["geometry", "hex_id", "dist_km"]].join(df, how="left")
@@ -297,7 +315,10 @@ def clear_pct_plots():
                 AND ground_control
             """
             label = f"clear={clear_pct}%"
-        query = make_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
+        if solar:
+            query = make_solar_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
+        else:
+            query = make_time_between_query(year, pct, hours=hours, valid_only=False, extra_filter=valid_filter)
 
         df = con.execute(query).fetchdf().set_index("grid_id")
         hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({f"p{pct}_days_between": 365})
@@ -331,7 +352,10 @@ def clear_pct_plots():
         AND ground_control
     """
     label = "clear=75%,mid_tide"
-    query = make_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
+    if solar:
+        query = make_solar_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
+    else:
+        query = make_time_between_query(year, pct, hours=hours, valid_only=False, extra_filter=valid_filter)
 
     df = con.execute(query).fetchdf().set_index("grid_id")
     hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({f"p{pct}_days_between": 365})
@@ -383,7 +407,7 @@ def clear_pct_plots():
     logger.info("Done with clear % plots")
 
 
-# yearly_plots()
+yearly_plots()
 clear_pct_plots()
 
 logger.info("Done")
