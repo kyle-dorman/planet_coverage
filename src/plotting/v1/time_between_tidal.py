@@ -9,7 +9,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from src.plotting.util import load_grids, make_time_between_query, plot_gdf_column
+from src.plotting.util import load_grids, make_solar_time_between_query, plot_gdf_column
 
 warnings.filterwarnings("ignore")  # hide every warning
 
@@ -26,7 +26,7 @@ FIG_DIR = BASE.parent / "figs" / BASE.name / "tide_time_between"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
-f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
+f_pattern = "dove/coastal_results/*/*/*/coastal_points.parquet"
 all_files_pattern = str(BASE / f_pattern)
 
 # Combined list used later when we search individual files
@@ -185,12 +185,10 @@ def run():
     con = duckdb.connect()
 
     # Register a view for all files
-    con.execute(
-        f"""
+    con.execute(f"""
         CREATE OR REPLACE VIEW samples_all AS
         SELECT * FROM read_parquet('{all_files_pattern}');
-    """
-    )
+    """)
     logger.info("Registered DuckDB view 'samples_all'")
 
     all_grids_query = """
@@ -243,7 +241,7 @@ def run():
                     extra_filter = "AND tide_height_bin = 0 AND has_tide_data"
 
                 for valid in [True, False]:
-                    query = make_time_between_query(year, pct, valid, extra_filter=extra_filter)
+                    query = make_solar_time_between_query(year, pct, valid, extra_filter=extra_filter)
 
                     valid_str = "valid" if valid else "all"
                     disp_year = year + 1

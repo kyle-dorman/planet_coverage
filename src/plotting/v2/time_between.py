@@ -1,3 +1,4 @@
+import argparse
 import logging
 import warnings
 from pathlib import Path
@@ -34,7 +35,7 @@ BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")  # <-- update
 SHORELINES = BASE.parent / "shorelines"
 
 # Example path patterns
-f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
+f_pattern = "dove/coastal_results/*/*/*/coastal_points.parquet"
 all_files_pattern = str(BASE / f_pattern)
 
 # Combined list used later when we search individual files
@@ -49,33 +50,24 @@ logger.info("Found %d parquet files", len(all_parquets))
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)  # & (lats > -81.5) & (lats < 81.5)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
 con = duckdb.connect()
 
 # Register a view for all files
-con.execute(
-    f"""
+con.execute(f"""
     CREATE OR REPLACE VIEW samples_all AS
     SELECT * FROM read_parquet('{all_files_pattern}');
-"""
-)
+""")
 logger.info("Registered DuckDB view 'samples_all'")
-
-pct = 50
-hours = 12
-solar = False
-if solar:
-    FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}_solar_time"
-else:
-    FIG_DIR = BASE.parent / "figs_v2" / f"time_between_{pct}_pct_{hours}_hours"
-FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 
 # --------------------- Yearly Comparision ------------------------
-def yearly_plots():
+
+
+def yearly_plots(con, grids_df, hex_grid, pct: int, hours: int, solar: bool, fig_dir: Path):
     start_year = 2015
     end_year = 2024
     valid = True
@@ -87,6 +79,8 @@ def yearly_plots():
     all_year_counts = np.zeros(len(bin_edges) - 1)
 
     all_years_df = []
+
+    pct_key = f"p{pct}_days_between"
 
     for year in tqdm(range(start_year, end_year), total=end_year - start_year):
         disp_year = year + 1
@@ -110,17 +104,15 @@ def yearly_plots():
         else:
             query = make_time_between_query(year, pct, valid, hours=hours)
 
-        df = con.execute(query).fetchdf().set_index("grid_id")
+        df: pd.DataFrame = con.execute(query).fetchdf().set_index("grid_id")
+        df.loc[df.sample_count < 2, pct_key] = np.nan
         hex_df = grids_df[["geometry", "hex_id", "dist_km"]].join(df, how="left")
+        hex_df["year"] = disp_year
 
-        hex_df[hex_df[f"p{pct}_days_between"] > 180] = np.nan
-
-        hex_df["year"] = year
-
-        all_years_df.append(hex_df.fillna({f"p{pct}_days_between": 365}).copy().reset_index())
+        all_years_df.append(hex_df.copy().reset_index())
 
         agg = hex_df.groupby("hex_id").agg(
-            median_days_between=(f"p{pct}_days_between", "median"),
+            median_days_between=(pct_key, "median"),
         )
         agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
         gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
@@ -131,13 +123,12 @@ def yearly_plots():
             "median_days_between",
             title=title,
             title_fontsize=15,
-            save_path=FIG_DIR / f"median_days_between_{disp_year}.png",
+            save_path=fig_dir / f"median_days_between_{disp_year}.png",
             bins=plt_bin_edges.tolist(),
         )
 
     # ------- Plot hist -------------
 
-    # create a 2 × 5 grid of axes (ten panels)
     fig, ax = plt.subplots(
         1,
         1,
@@ -178,17 +169,17 @@ def yearly_plots():
         fontsize=14,
     )
 
-    plt.savefig(FIG_DIR / "cumsum_time_between_all_samples.png")
+    plt.savefig(fig_dir / "cumsum_time_between_all_samples.png")
     plt.close(fig)
 
     # ------- Plot Geo -------------
 
     # Aggregate over all years per grid and then group by hex_id.
     df = pd.concat(all_years_df, ignore_index=True)
-    gdf = gpd.GeoDataFrame(hex_df.copy(), geometry="geometry", crs=grids_df.crs)
+    gdf = gpd.GeoDataFrame(df, geometry="geometry", crs=grids_df.crs)
     logger.info("Saving yearly grid results to ShapeFile")
-    (FIG_DIR / "per_grid_per_year").mkdir(exist_ok=True)
-    gdf.to_file(FIG_DIR / "per_grid_per_year" / "data.shp")
+    (fig_dir / "per_grid_per_year").mkdir(exist_ok=True)
+    gdf.to_file(fig_dir / "per_grid_per_year" / "data.shp")
 
     # Prepare colormap for years
     num_years = end_year - start_year
@@ -202,15 +193,14 @@ def yearly_plots():
         constrained_layout=True,
     )
 
-    for year, group in df.groupby("year"):
-        year = int(year)  # type: ignore
-        disp_year = year + 1
+    for disp_year, group in df.groupby("year"):
+        disp_year = int(disp_year)  # type: ignore
         counts, _ = np.histogram(group[f"p{pct}_days_between"], bin_edges)
         cumsum = np.cumsum(counts)
         total = cumsum[-1] if cumsum[-1] else 1.0  # prevent divide-by-zero
         cumsum_pct = cumsum / total * 100.0  # → 0-100 %
 
-        color = cmap_years(year - start_year)  # consistent color per year
+        color = cmap_years(disp_year - start_year - 1)  # consistent color per year
         ax.plot(
             bin_right,
             cumsum_pct,
@@ -241,7 +231,7 @@ def yearly_plots():
         fontsize=14,
     )
 
-    plt.savefig(FIG_DIR / f"cumsum_p{pct}_time_between_samples_by_year.png")
+    plt.savefig(fig_dir / f"cumsum_p{pct}_time_between_samples_by_year.png")
     plt.close(fig)
 
     logger.info("Created Yearly Cumulative distribution plot")
@@ -253,35 +243,36 @@ def yearly_plots():
     gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=grids_df.crs)
     # Save data
     logger.info("Saving per grid yearly aggregated grid results to ShapeFile")
-    (FIG_DIR / "per_grid_year_agg").mkdir(exist_ok=True)
-    gdf.to_file(FIG_DIR / "per_grid_year_agg" / "data.shp")
+    (fig_dir / "per_grid_year_agg").mkdir(exist_ok=True)
+    gdf.to_file(fig_dir / "per_grid_year_agg" / "data.shp")
 
-    agg = hex_df.groupby("hex_id").agg(
-        median_median_days_between=("median_days_between", "median"),
-    )
-    agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
-    gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
+    # logger.info("Saving yearly aggregated results to ShapeFile")
+    # agg = hex_df.groupby("hex_id").agg(
+    #     median_median_days_between=("median_days_between", "median"),
+    # )
+    # agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
+    # gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
-    # Save data
-    logger.info("Saving yearly aggregated results to ShapeFile")
-    (FIG_DIR / "hex_year_agg").mkdir(exist_ok=True)
-    gdf.to_file(FIG_DIR / "hex_year_agg" / "data.shp")
+    # (fig_dir / "hex_year_agg").mkdir(exist_ok=True)
+    # gdf.to_file(fig_dir / "hex_year_agg" / "data.shp")
 
-    title = f"p{pct} Days Between Samples (Year Agg: Median, Agg: Median)"
-    plot_gdf_column(
-        gdf,
-        "median_median_days_between",
-        title=title,
-        title_fontsize=15,
-        save_path=FIG_DIR / "median_median_days_between.png",
-        # vmax=180,
-        bins=plt_bin_edges.tolist(),
-    )
-    logger.info("Done with yearly plots")
+    # title = f"p{pct} Days Between Samples (Year Agg: Median, Agg: Median)"
+    # plot_gdf_column(
+    #     gdf,
+    #     "median_median_days_between",
+    #     title=title,
+    #     title_fontsize=15,
+    #     save_path=fig_dir / "median_median_days_between.png",
+    #     # vmax=180,
+    #     bins=plt_bin_edges.tolist(),
+    # )
+    # logger.info("Done with yearly plots")
 
 
 # --------------------- Clear % Comparision ------------------------
-def clear_pct_plots():
+
+
+def clear_pct_plots(con, grids_df, pct: int, hours: int, solar: bool, fig_dir: Path):
     # Prepare colormap for clear %
     clear_pcts = [None, 0, 25, 50, 75, 100]
     num_rows = len(clear_pcts)
@@ -299,6 +290,7 @@ def clear_pct_plots():
         figsize=(6, 4),
         constrained_layout=True,
     )
+    pct_key = f"p{pct}_days_between"
 
     all_levels_df = []
 
@@ -321,12 +313,14 @@ def clear_pct_plots():
             query = make_time_between_query(year, pct, hours=hours, valid_only=False, extra_filter=valid_filter)
 
         df = con.execute(query).fetchdf().set_index("grid_id")
-        hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({f"p{pct}_days_between": 365})
+        df.loc[df.sample_count < 2, pct_key] = np.nan
+        hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({pct_key: 365})
         hex_df["clear_pct"] = clear_pct
+        hex_df["year"] = disp_year
 
         all_levels_df.append(hex_df.reset_index().copy())
 
-        counts, _ = np.histogram(hex_df[f"p{pct}_days_between"], bin_edges)
+        counts, _ = np.histogram(hex_df[pct_key], bin_edges)
         cumsum = np.cumsum(counts)
         total = cumsum[-1] if cumsum[-1] else 1.0  # prevent divide-by-zero
         cumsum_pct = cumsum / total * 100.0  # → 0-100 %
@@ -341,37 +335,39 @@ def clear_pct_plots():
             label=label,
         )
 
-    # mid tide
-    valid_filter = """
-        AND publishing_stage = 'finalized'
-        AND quality_category = 'standard'
-        AND clear_percent    >= 75
-        AND is_mid_tide
-        and has_tide_data
-        AND has_sr_asset
-        AND ground_control
-    """
-    label = "clear=75%,mid_tide"
-    if solar:
-        query = make_solar_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
-    else:
-        query = make_time_between_query(year, pct, hours=hours, valid_only=False, extra_filter=valid_filter)
+    # # mid tide
+    # valid_filter = """
+    #     AND publishing_stage = 'finalized'
+    #     AND quality_category = 'standard'
+    #     AND clear_percent    >= 75
+    #     AND is_mid_tide
+    #     and has_tide_data
+    #     AND has_sr_asset
+    #     AND ground_control
+    # """
+    # label = "clear=75%,mid_tide"
+    # if solar:
+    #     query = make_solar_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
+    # else:
+    #     query = make_time_between_query(year, pct, hours=hours, valid_only=False, extra_filter=valid_filter)
 
-    df = con.execute(query).fetchdf().set_index("grid_id")
-    hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({f"p{pct}_days_between": 365})
-    counts, _ = np.histogram(hex_df[f"p{pct}_days_between"], bin_edges)
-    cumsum = np.cumsum(counts)
-    total = cumsum[-1] if cumsum[-1] else 1.0  # prevent divide-by-zero
-    cumsum_pct = cumsum / total * 100.0  # → 0-100 %
+    # df = con.execute(query).fetchdf().set_index("grid_id")
+    # df.loc[df.sample_count < 2, pct_key] = np.nan
+    # hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({pct_key: 365})
+    # hex_df["year"] = disp_year
+    # counts, _ = np.histogram(hex_df[pct_key], bin_edges)
+    # cumsum = np.cumsum(counts)
+    # total = cumsum[-1] if cumsum[-1] else 1.0  # prevent divide-by-zero
+    # cumsum_pct = cumsum / total * 100.0  # → 0-100 %
 
-    ax.plot(
-        bin_right,
-        cumsum_pct,
-        marker="o",
-        linestyle="-",
-        color="orange",
-        label=label,
-    )
+    # ax.plot(
+    #     bin_right,
+    #     cumsum_pct,
+    #     marker="o",
+    #     linestyle="-",
+    #     color="orange",
+    #     label=label,
+    # )
 
     ax.set_ylim(0, 100)
     ax.set_xscale("log")
@@ -394,20 +390,60 @@ def clear_pct_plots():
         fontsize=14,
     )
 
-    plt.savefig(FIG_DIR / f"cumsum_p{pct}_time_between_samples_by_clear_pct_{disp_year}.png")
+    plt.savefig(fig_dir / f"cumsum_p{pct}_time_between_samples_by_clear_pct_{disp_year}.png")
     plt.close(fig)
 
     df = pd.concat(all_levels_df, ignore_index=True)
-    gdf = gpd.GeoDataFrame(hex_df.copy(), geometry="geometry", crs=grids_df.crs)
+    gdf = gpd.GeoDataFrame(df.copy(), geometry="geometry", crs=grids_df.crs)
     # Save data
     logger.info("Saving per grid cloud cover results to ShapeFile")
-    (FIG_DIR / "per_grid_clear_pct").mkdir(exist_ok=True)
-    gdf.to_file(FIG_DIR / "per_grid_clear_pct" / "data.shp")
+    (fig_dir / "per_grid_clear_pct").mkdir(exist_ok=True)
+    gdf.to_file(fig_dir / "per_grid_clear_pct" / "data.shp")
 
     logger.info("Done with clear % plots")
 
 
-yearly_plots()
-clear_pct_plots()
+def run_case(con, grids_df, hex_grid, pct: int, hours: int, solar: bool):
+    if solar:
+        fig_dir = BASE.parent / "figs_v2" / f"time_between_{pct}_solar_time"
+    else:
+        fig_dir = BASE.parent / "figs_v2" / f"time_between_{pct}_pct_{hours}_hours"
+    fig_dir.mkdir(exist_ok=True, parents=True)
 
-logger.info("Done")
+    yearly_plots(con, grids_df, hex_grid, pct=pct, hours=hours, solar=solar, fig_dir=fig_dir)
+    clear_pct_plots(con, grids_df, pct=pct, hours=hours, solar=solar, fig_dir=fig_dir)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate time-between plots with configurable parameters.")
+    parser.add_argument(
+        "--pct", type=int, nargs="+", default=[50], help="One or more percentile values (e.g., 50 75 90)"
+    )
+    parser.add_argument(
+        "--hours",
+        type=int,
+        nargs="+",
+        default=[12],
+        help="One or more hour thresholds for same-day grouping (e.g., 6 12)",
+    )
+    parser.add_argument(
+        "--solar", type=str, nargs="+", default=["false"], help="One or more boolean flags for solar mode (true/false)"
+    )
+    args = parser.parse_args()
+
+    # Normalize solar strings to booleans
+    def to_bool(s: str) -> bool:
+        return str(s).lower() in {"1", "t", "true", "y", "yes"}
+
+    solar_list = [to_bool(s) for s in args.solar]
+
+    # for p, h in product(args.pct, args.hours):
+    #     logger.info("Running with pct=%s, hours=%s, solar=%s", p, h, False)
+    #     run_case(con, grids_df, hex_grid, pct=p, hours=h, solar=False)
+
+    if True in solar_list:
+        for p in args.pct:
+            logger.info("Running with pct=%s, solar=%s", p, True)
+            run_case(con, grids_df, hex_grid, pct=p, hours=-1, solar=True)
+
+    logger.info("Done")

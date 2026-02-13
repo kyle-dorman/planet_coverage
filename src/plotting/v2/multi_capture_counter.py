@@ -1,3 +1,4 @@
+import json
 import logging
 import warnings
 from pathlib import Path
@@ -47,20 +48,19 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
+# lats = grids_df.centroid.y
+# valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
 con = duckdb.connect()
 
 # Register a view for all files
-con.execute(
-    f"""
+con.execute(f"""
     CREATE OR REPLACE VIEW samples_all AS
     SELECT * FROM read_parquet('{all_files_pattern}');
-"""
-)
+""")
 # con.install_extension("sql_functions")
 # con.load_extension("sql_functions")
 logger.info("Registered DuckDB view 'samples_all'")
@@ -108,6 +108,9 @@ def plot_histogram():
         all_year_counts += counts[1:-1]  # skip the <0.1-min bin
 
     logger.info("Query finished")
+
+    with open(FIG_DIR / "hist_data.json", "w") as f:
+        json.dump({"counts": all_year_counts.tolist(), "bins": bins.tolist()}, f)
 
     # create a grid
     fig, ax = plt.subplots(
@@ -163,7 +166,7 @@ def plot_histogram():
 
     # match histogram x-axis styling
     ax2.set_xscale("log")
-    ax2.set_xticks(minute_edges)
+    ax.set_xticks(minute_edges[1:])
     ax2.set_xticklabels([f"{b:g}" for b in minute_edges[1:]])
     ax2.xaxis.set_minor_locator(NullLocator())
 
@@ -199,6 +202,10 @@ def plot_geo():
     agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
     gdf = gpd.GeoDataFrame(agg, geometry="geometry")
 
+    logger.info("Saving grid results to ShapeFile")
+    (FIG_DIR / "per_grid_multi_capture_days").mkdir(exist_ok=True)
+    gdf.to_file(FIG_DIR / "per_grid_multi_capture_days" / "data.shp")
+
     plot_gdf_column(
         gdf=gdf,
         column="max_multi_capture_days",
@@ -207,6 +214,7 @@ def plot_geo():
         use_cbar_label=False,
         vmax=70,
     )
+    logger.info("Done plotting geo")
 
 
 # plot_geo()

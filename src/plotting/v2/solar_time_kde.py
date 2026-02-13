@@ -111,12 +111,10 @@ if not all_files:
     logger.error("No solar parquet files found in coastal_results_solar paths.")
     raise FileNotFoundError("No coastal_results_solar parquet files found")
 
-con.execute(
-    f"""
+con.execute(f"""
     CREATE OR REPLACE VIEW samples_all AS
     SELECT * FROM read_parquet('{pat}')
-    """
-)
+    """)
 fig, axes = plt.subplots(nrows=3, ncols=3, sharex=True, figsize=(4 * 3, 3 * 3), constrained_layout=True)
 x_min = 6.0
 x_max = 13.0

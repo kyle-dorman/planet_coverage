@@ -62,12 +62,10 @@ def solar_time_offset_by_fy_plot():
         logger.error("No solar parquet files found in coastal_results_solar paths.")
         raise FileNotFoundError("No coastal_results_solar parquet files found")
 
-    con.execute(
-        f"""
+    con.execute(f"""
         CREATE OR REPLACE VIEW samples_all AS
         SELECT * FROM read_parquet('{pat}')
-        """
-    )
+        """)
     logger.info("Registered DuckDB view 'samples_all' for solar_time_offset plot")
 
     grid_ids = grids_df.index.to_list()
@@ -184,12 +182,10 @@ def solar_time_offset_by_year_month_plot():
         logger.error("No solar parquet files found in coastal_results_solar paths.")
         raise FileNotFoundError("No coastal_results_solar parquet files found")
 
-    con.execute(
-        f"""
+    con.execute(f"""
         CREATE OR REPLACE VIEW samples_all AS
         SELECT * FROM read_parquet('{pat}')
-        """
-    )
+        """)
     logger.info("Registered DuckDB view 'samples_all' for solar_time_offset plot")
 
     grid_ids = grids_df.index.to_list()
@@ -311,12 +307,10 @@ def plot_median_and_std_geo():
         logger.error("No solar parquet files found in coastal_results_solar paths.")
         raise FileNotFoundError("No coastal_results_solar parquet files found")
 
-    con.execute(
-        f"""
+    con.execute(f"""
         CREATE OR REPLACE VIEW samples_all AS
         SELECT * FROM read_parquet('{pat}')
-        """
-    )
+        """)
     logger.info("Registered DuckDB view 'samples_all' for solar_time_offset plot")
 
     query = """

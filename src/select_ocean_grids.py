@@ -4,6 +4,7 @@ select_ocean_grids.py
 
 Generate a regular polygon grid, retain only grids that are over the coastline or open ocean.
 """
+
 import logging
 import multiprocessing as mp
 

@@ -330,13 +330,11 @@ def main(
     # restrict to those IDs; since we filtered, no KeyError will arise
     joined = joined.loc[valid_cell_ids].reset_index().set_index("grid_id")
 
-    logger.info(
-        f"""
+    logger.info(f"""
         Found {len(joined)} intersections between
         {len(gdf_coastal)} coastal grids,
         {len(query_gdf)} total query grids and
-        {len(valid_cell_ids)} valid query grids."""
-    )
+        {len(valid_cell_ids)} valid query grids.""")
 
     # Gather per cell tide height edges and geometry centroids
     query_gdf.geometry = query_gdf.centroid

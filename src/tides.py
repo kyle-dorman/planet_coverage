@@ -133,6 +133,10 @@ def tide_model(model_directory: Path | None, model_name: str, model_format: str)
     assert model_name == "GOT4.10", "Only support GOT4.10 for now!"
 
     # Load the GOT4.10c model
-    model = pyTMD.io.model(model_directory, format=model_format).elevation(model_name)
+    model = pyTMD.io.model(model_directory, format=model_format).from_database(model_name)
 
     return TideModel(model, model_directory, model_name)
+
+
+tm = tide_model(Path("/Users/kyledorman/data/tides"), "GOT4.10", "GOT")
+assert tm is not None

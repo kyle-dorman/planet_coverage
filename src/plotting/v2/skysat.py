@@ -54,12 +54,10 @@ logger.info("Loaded grid dataframes")
 con = duckdb.connect()
 
 # Register a view for all files
-con.execute(
-    f"""
+con.execute(f"""
     CREATE OR REPLACE VIEW samples_all AS
     SELECT * FROM read_parquet('{all_files_pattern}');
-"""
-)
+""")
 logger.info("Registered DuckDB view 'samples_all'")
 
 

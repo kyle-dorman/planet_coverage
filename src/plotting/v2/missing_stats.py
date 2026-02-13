@@ -40,12 +40,10 @@ def query_grid_stats():
     logger.info("Found %d query parquet files", len(all_parquets))
 
     # Register a view for all files
-    con.execute(
-        f"""
+    con.execute(f"""
         CREATE OR REPLACE VIEW query_view AS
         SELECT * FROM read_parquet('{all_files_pattern}');
-    """
-    )
+    """)
     logger.info("Registered DuckDB view 'query_view'")
 
     query = """

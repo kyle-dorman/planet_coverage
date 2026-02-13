@@ -359,7 +359,15 @@ def make_solar_time_between_query(year: int, pct: int, valid_only: bool, extra_f
         GROUP BY grid_id, ts
     ),
 
-    bounds AS (                         -- 2️⃣  add the end-marker
+    bounds AS (                         -- 2️⃣  add the two end-markers
+        -- one row per grid for the window START
+        SELECT DISTINCT
+            grid_id,
+            DATE_TRUNC('day', TIMESTAMP '{start_date}') AS ts
+        FROM rows
+
+        UNION ALL
+
         -- one row per grid for the window END
         SELECT DISTINCT
             grid_id,
@@ -381,16 +389,27 @@ def make_solar_time_between_query(year: int, pct: int, valid_only: bool, extra_f
                 ts
             ) AS DOUBLE) AS days_between
         FROM ordered
+    ),
+
+    sample_counts AS (                  -- 6️⃣  total number of samples per grid_id in window
+        SELECT
+            grid_id,
+            COUNT(*) AS sample_count
+        FROM rows
+        GROUP BY grid_id
     )
 
-    -- 6️⃣  percentile per grid
+    -- 7️⃣  percentile per grid + sample count
     SELECT
-        grid_id,
-        quantile_cont(days_between, 0.{pct}) AS p{pct}_days_between
-    FROM deltas
-    WHERE days_between IS NOT NULL
-    GROUP BY grid_id
-    ORDER BY grid_id;
+        d.grid_id,
+        quantile_cont(d.days_between, 0.{pct}) AS p{pct}_days_between,
+        sc.sample_count
+    FROM deltas AS d
+    JOIN sample_counts AS sc
+      ON d.grid_id = sc.grid_id
+    WHERE d.days_between IS NOT NULL
+    GROUP BY d.grid_id, sc.sample_count
+    ORDER BY d.grid_id;
     """
 
 
@@ -440,7 +459,15 @@ def make_solar_time_between_hist_query(
         GROUP BY grid_id, ts
     ),
 
-    bounds AS (                         -- 2️⃣  add the end-marker
+    bounds AS (                         -- 2️⃣  add the two end-markers
+        -- one row per grid for the window START
+        SELECT DISTINCT
+            grid_id,
+            DATE_TRUNC('day', TIMESTAMP '{start_date}') AS ts
+        FROM rows
+
+        UNION ALL
+
         -- one row per grid for the window END
         SELECT DISTINCT
             grid_id,
@@ -551,16 +578,27 @@ def make_time_between_query(year: int, pct: int, valid_only: bool, hours: int, e
         SELECT grid_id, days_between
         FROM deltas
         WHERE days_between >= {day_filter}
+    ),
+
+    sample_counts AS (                  -- 6️⃣  total number of samples per grid_id in window
+        SELECT
+            grid_id,
+            COUNT(*) AS sample_count
+        FROM rows
+        GROUP BY grid_id
     )
 
-    -- 6️⃣  percentile per grid
+    -- 7️⃣  percentile per grid + sample count
     SELECT
-        grid_id,
-        quantile_cont(days_between, 0.{pct}) AS p{pct}_days_between
-    FROM filtered
-    WHERE days_between IS NOT NULL
-    GROUP BY grid_id
-    ORDER BY grid_id;
+        f.grid_id,
+        quantile_cont(f.days_between, 0.{pct}) AS p{pct}_days_between,
+        sc.sample_count
+    FROM filtered AS f
+    JOIN sample_counts AS sc
+      ON f.grid_id = sc.grid_id
+    WHERE f.days_between IS NOT NULL
+    GROUP BY f.grid_id, sc.sample_count
+    ORDER BY f.grid_id;
     """
 
 
@@ -693,7 +731,7 @@ def make_multiple_captures_query(year: int, valid_only: bool = False) -> str:
     WITH filtered AS (
         SELECT
             grid_id,
-            DATE_TRUNC('day', acquired) AS day,
+            DATE_TRUNC('day', solar_time) AS day,
             satellite_id
         FROM samples_all
         WHERE
@@ -822,7 +860,7 @@ def make_max_daily_captures_query(year: int, valid_only: bool = False) -> str:
     WITH daily_counts AS (
         SELECT
             grid_id,
-            DATE_TRUNC('day', acquired) AS sample_day,
+            DATE_TRUNC('day', solar_time) AS sample_day,
             COUNT(*) AS daily_count
         FROM samples_all
         WHERE
@@ -917,7 +955,7 @@ def make_daily_time_between_hist_query(
         SELECT
             s.grid_id,
             s.satellite_id,
-            EXTRACT(epoch FROM s.acquired) AS ts
+            MIN(EXTRACT(epoch FROM s.acquired)) AS ts
         FROM samples_all AS s
         JOIN grid_ids_tbl USING (grid_id)
         WHERE
@@ -926,6 +964,10 @@ def make_daily_time_between_hist_query(
             AND s.item_type  = 'PSScene'
             AND s.coverage_pct > 0.5
             {valid_filter}
+        GROUP BY
+            s.grid_id,
+            s.satellite_id,
+            DATE_TRUNC('day', s.solar_time)
     ),
 
     deltas AS (

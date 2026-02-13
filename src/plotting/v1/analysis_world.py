@@ -42,33 +42,27 @@ con = duckdb.connect()
 
 
 # Register a view for all files
-con.execute(
-    f"""
+con.execute(f"""
     CREATE OR REPLACE VIEW samples_all AS
     SELECT * FROM read_parquet('{all_files_pattern}');
-"""
-)
+""")
 
 
 if not os.path.exists("extracted/dove_skysay_grid_counts.csv"):
-    df_dove = con.execute(
-        """
+    df_dove = con.execute("""
         SELECT cell_id, date_trunc('year', acquired) AS year, COUNT(*) AS dove_count
         FROM samples_all
         WHERE item_type = 'PSScene'
         GROUP BY cell_id, year
         ORDER BY cell_id, year
-    """
-    ).fetchdf()
-    df_sky = con.execute(
-        """
+    """).fetchdf()
+    df_sky = con.execute("""
         SELECT cell_id, date_trunc('year', acquired) AS year, COUNT(*) AS sky_count
         FROM samples_all
         WHERE item_type = 'SkySatCollect'
         GROUP BY cell_id, year
         ORDER BY cell_id, year
-    """
-    ).fetchdf()
+    """).fetchdf()
 
     merged = df_dove.set_index(["cell_id", "year"]).join(df_sky.set_index(["cell_id", "year"]), how="inner")
 
@@ -76,15 +70,13 @@ if not os.path.exists("extracted/dove_skysay_grid_counts.csv"):
 
 
 def create_bool_df(column_name, bool_logic_str, merge_df, nafill=0.0):
-    df_pct = con.execute(
-        f"""
+    df_pct = con.execute(f"""
         SELECT cell_id,
                SUM({bool_logic_str})::DOUBLE  / COUNT(*) AS frac_{column_name}
         FROM samples_all
         WHERE item_type = 'PSScene'
         GROUP BY cell_id
-    """
-    ).fetchdf()
+    """).fetchdf()
 
     geo_pct = (
         merge_df.set_index("cell_id")
@@ -98,14 +90,12 @@ def create_bool_df(column_name, bool_logic_str, merge_df, nafill=0.0):
 # --- Load Geo Points and Join ---
 
 # Sample count per grid cell
-df_counts = con.execute(
-    """
+df_counts = con.execute("""
     SELECT cell_id, COUNT(*) as sample_count
     FROM samples_all
     WHERE item_type = 'SkySatCollect'
     GROUP BY cell_id
-"""
-).fetchdf()
+""").fetchdf()
 
 if not os.path.exists("extracted/skysat_sample_count.gpkg"):
     geo_plot = (
@@ -118,14 +108,12 @@ if not os.path.exists("extracted/skysat_sample_count.gpkg"):
 
 # Sample count per grid cell
 if not os.path.exists("extracted/dove_sample_count.gpkg"):
-    df_counts = con.execute(
-        """
+    df_counts = con.execute("""
         SELECT cell_id, COUNT(*) as sample_count
         FROM samples_all
         WHERE item_type = 'PSScene'
         GROUP BY cell_id
-    """
-    ).fetchdf()
+    """).fetchdf()
 
     geo_plot = (
         grids_df.set_index("cell_id").join(df_counts.set_index("cell_id"), how="left").fillna({"sample_count": 0})
@@ -208,15 +196,13 @@ if not os.path.exists("extracted/pct_ground_control.gpkg"):
 
 
 if os.path.exists("extracted/pct_preview_with_ground_control.gpkg"):
-    df_pct = con.execute(
-        """
+    df_pct = con.execute("""
         SELECT cell_id,
             SUM(ground_control)::DOUBLE  / COUNT(*) AS frac_preview_gc
         FROM samples_all
         WHERE item_type = 'PSScene' AND publishing_stage = 'preview'
         GROUP BY cell_id
-    """
-    ).fetchdf()
+    """).fetchdf()
 
     geo_pct = (
         grids_df.set_index("cell_id").join(df_pct.set_index("cell_id"), how="left").fillna({"frac_preview_gc": 0.0})
