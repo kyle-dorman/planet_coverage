@@ -78,16 +78,16 @@ def plot_histogram():
     plt.style.use("seaborn-v0_8-darkgrid")
 
     bins = np.floor(np.logspace(np.log10(1.0), np.log10(12.0 * 60), 10)).astype(np.int32)
-    minute_edges = [0.1] + [round_up(n) for n in bins]
+    minute_edges = [1e-3] + [round_up(n) for n in bins]
     bin_right = minute_edges[1:]  # right edge of each bar
-    day_edges = [m / 1440.0 for m in minute_edges]  # minutes → days
+    day_edges = [m / 1440.0 for m in bin_right]  # minutes → days
     valid = True
 
     grid_ids = grids_df.index.to_list()
     grid_tbl = pd.DataFrame({"grid_id": grid_ids})
     con.register("grid_ids_tbl", grid_tbl)
 
-    all_year_counts = np.zeros(len(minute_edges) - 1)
+    hist_rows = []          # tidy (long) rows for CSV export
 
     for year in tqdm(range(2016, 2025), total=2025 - 2016):
         query = make_daily_time_between_hist_query(
@@ -103,14 +103,35 @@ def plot_histogram():
         # Ensure bins are in correct order (they should be!)
         order = np.argsort(bins)
         bins = bins[order]
+        print(year)
+        print(bins)
         counts = counts[order]
+        
+        # Last bin is inf, ignore
+        bins = np.array(bins[:-1] * 1440.0, dtype=np.int32).tolist()
+        assert np.allclose(bins, bin_right)
+        counts = counts[:-1]
 
-        all_year_counts += counts[1:-1]  # skip the <0.1-min bin
+        # Tidy/long rows for CSV: one row per (year, bin)
+        # Keep the existing "+ 1" year convention from the previous code.
+        year_out = year + 1
+
+        # Lower/upper edges in minutes for each bin (upper edges are `bins` here)
+        bin_lowers = [0] + bins[:-1]
+
+        for lo, hi, c in zip(bin_lowers, bins, counts):
+            hist_rows.append(
+                {
+                    "year": year_out,
+                    "bin_lower_edge_min": int(lo),
+                    "bin_upper_edge_min": int(hi),
+                    "count": int(c),
+                }
+            )
 
     logger.info("Query finished")
-
-    with open(FIG_DIR / "hist_data.json", "w") as f:
-        json.dump({"counts": all_year_counts.tolist(), "bins": bins.tolist()}, f)
+    hist_df = pd.DataFrame(hist_rows).sort_values(["year", "bin_upper_edge_min"])
+    hist_df.to_csv(FIG_DIR / "hist_data.csv", index=False)
 
     # create a grid
     fig, ax = plt.subplots(

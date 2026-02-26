@@ -97,6 +97,12 @@ for pct in [50, 90]:
 
     logger.info("Joined tide extremes with coastal grids: geo_tide has %d rows", len(geo_tide))
 
+    gdf = gpd.GeoDataFrame(geo_tide, geometry="geometry")
+
+    logger.info("Saving grid level results to ShapeFile")
+    (FIG_DIR / "grid_tide_range").mkdir(exist_ok=True)
+    gdf.to_file(FIG_DIR / "grid_tide_range" / "data.shp")
+
     hex_tide = geo_tide.groupby("hex_id").agg(  # keep one row per hex_id
         min_tide_range_coverage=("tide_range_coverage", "min"),
         max_tide_range_coverage=("tide_range_coverage", "max"),
@@ -164,7 +170,12 @@ for pct in [50, 90]:
     extra_filter = "AND is_mid_tide AND has_tide_data"
     query = make_solar_time_between_query(year, pct, valid_only=True, extra_filter=extra_filter)
     df = con.execute(query).fetchdf().set_index("grid_id")
-    hex_df = grids_df[["hex_id", "dist_km"]].join(df, how="left")
+    hex_df = grids_df[["hex_id", "dist_km", "geometry"]].join(df, how="left")
+
+    gdf = gpd.GeoDataFrame(hex_df, geometry="geometry")
+    logger.info("Saving grid level time between results to ShapeFile")
+    (FIG_DIR / "grid_days_between").mkdir(exist_ok=True)
+    gdf.to_file(FIG_DIR / "grid_days_between" / "data.shp")
 
     agg = hex_df.groupby("hex_id").agg(
         median_days_between=(f"p{pct}_days_between", "median"),
