@@ -3,6 +3,7 @@ import warnings
 from pathlib import Path
 
 import duckdb
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
@@ -39,8 +40,9 @@ logger.info("Found %d parquet files", len(all_parquets))
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 60.0
 lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
-grids_df = grids_df[valid]
+# valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
+grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
 con = duckdb.connect()
@@ -60,8 +62,8 @@ query = """
     WHERE
         item_type = 'PSScene'
         AND coverage_pct > 0.5
-        AND acquired >= TIMESTAMP '2023-12-01'
-        AND acquired < TIMESTAMP '2024-12-01'
+        AND acquired        <  TIMESTAMP '2024-12-01'
+        AND acquired        >  TIMESTAMP '2015-12-01'
         AND publishing_stage = 'finalized'
         AND quality_category = 'standard'
         AND clear_percent    > 75.0
@@ -71,13 +73,19 @@ query = """
 """
 
 df = con.execute(query).fetchdf().set_index("grid_id")
-hex_df = grids_df[["hex_id", "dist_km"]].join(df, how="left").fillna(0)
+merged_df = grids_df[["hex_id", "dist_km", "geometry"]].join(df, how="left").fillna(0)
+
+(FIG_DIR / "grid_data").mkdir(exist_ok=True)
+gdf = gpd.GeoDataFrame(merged_df, geometry="geometry", crs=grids_df.crs)
+gdf.to_file(FIG_DIR / "grid_data" / "data.shp")
+
+logger.info("Plotting Counts")
 
 # 1-km bins
-bins = pd.cut(hex_df["dist_km"], np.arange(0, int(MIN_DIST) + 1, 1))  # type: ignore
+bins = pd.cut(merged_df["dist_km"], np.arange(0, int(MIN_DIST) + 1, 1))  # type: ignore
 
 summary = (
-    hex_df.groupby(bins)["sample_count"]
+    merged_df.groupby(bins)["sample_count"]
     .agg(
         q25=lambda s: s.quantile(0.25),
         median="median",
@@ -107,9 +115,9 @@ plt.close(fig)
 # cumulative distribution: cumulative sample count (%) vs distance
 # ------------------------------------------------------------
 
-total_samples = hex_df["sample_count"].sum()
+total_samples = merged_df["sample_count"].sum()
 
-cdf_df = hex_df.sort_values("dist_km").copy()
+cdf_df = merged_df.sort_values("dist_km").copy()
 cdf_df["cum_pct"] = 100.0 * cdf_df["sample_count"].cumsum() / total_samples
 
 fig, ax = plt.subplots(

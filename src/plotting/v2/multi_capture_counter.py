@@ -1,4 +1,3 @@
-import json
 import logging
 import warnings
 from pathlib import Path
@@ -87,9 +86,12 @@ def plot_histogram():
     grid_tbl = pd.DataFrame({"grid_id": grid_ids})
     con.register("grid_ids_tbl", grid_tbl)
 
-    hist_rows = []          # tidy (long) rows for CSV export
+    hist_rows = []  # tidy (long) rows for CSV export
 
-    for year in tqdm(range(2016, 2025), total=2025 - 2016):
+    start_year = 2016
+    end_year = 2024
+    num_years = end_year - start_year
+    for year in tqdm(range(start_year, end_year), total=num_years):
         query = make_daily_time_between_hist_query(
             year,
             bins=day_edges,
@@ -103,23 +105,23 @@ def plot_histogram():
         # Ensure bins are in correct order (they should be!)
         order = np.argsort(bins)
         bins = bins[order]
-        print(year)
-        print(bins)
         counts = counts[order]
-        
+
         # Last bin is inf, ignore
-        bins = np.array(bins[:-1] * 1440.0, dtype=np.int32).tolist()
-        assert np.allclose(bins, bin_right)
+        int_bins = np.array(bins[:-1] * 1440.0, dtype=np.int32).tolist()
         counts = counts[:-1]
+        if not np.allclose(bins[:-1], day_edges):
+            print(year)
+            print(int_bins, bin_right)
 
         # Tidy/long rows for CSV: one row per (year, bin)
         # Keep the existing "+ 1" year convention from the previous code.
         year_out = year + 1
 
-        # Lower/upper edges in minutes for each bin (upper edges are `bins` here)
-        bin_lowers = [0] + bins[:-1]
+        # Lower/upper edges in minutes for each bin (upper edges are `int_bins` here)
+        bin_lowers = [0] + int_bins[:-1]
 
-        for lo, hi, c in zip(bin_lowers, bins, counts):
+        for lo, hi, c in zip(bin_lowers, int_bins, counts):
             hist_rows.append(
                 {
                     "year": year_out,
@@ -133,31 +135,42 @@ def plot_histogram():
     hist_df = pd.DataFrame(hist_rows).sort_values(["year", "bin_upper_edge_min"])
     hist_df.to_csv(FIG_DIR / "hist_data.csv", index=False)
 
-    # create a grid
-    fig, ax = plt.subplots(
-        1,
-        1,
-        figsize=(6, 4),
-        constrained_layout=True,
-    )
+    # Pivot to (bin x year) for plotting: each x-bin is stacked by year
+    pivot = hist_df.pivot(index="bin_upper_edge_min", columns="year", values="count").fillna(0).sort_index()
 
-    # ── build centres & widths (skip the <1-minute bin) ────────────────────
-    widths = np.diff(minute_edges)
-    widths[0] = widths[1]  # shrink the first visible bar
-    centers = np.array([right - w / 2 for right, w in zip(minute_edges[1:], widths)])
+    bin_uppers = pivot.index.to_numpy(dtype=float)  # minute upper edges
+    bin_lowers = np.r_[0.0, bin_uppers[:-1]]
+    widths = bin_uppers - bin_lowers
+    centers = bin_uppers - widths / 2.0
 
-    # ── plot, with edge & alpha for depth ───────────────────────────────────
-    ax.bar(
-        centers,
-        all_year_counts,
-        width=widths,
-        color="#4c78a8",
-        edgecolor="black",
-        alpha=0.85,
-        zorder=3,
-    )
+    years = list(pivot.columns)
 
-    # ── axes styling ───────────────────────────────────────────────────────
+    # ── Stacked histogram by bin (stacked by year) ─────────────────────────
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4), constrained_layout=True)
+
+    bottom = np.zeros(len(bin_uppers), dtype=float)
+
+    # Use a colormap for year colors (no hard-coded palette)
+    cmap_years = plt.cm.get_cmap("viridis", num_years)
+    year_colors = [cmap_years(disp_year - start_year - 1) for disp_year in years]
+
+    for yr, color in zip(years, year_colors):
+        y = pivot[yr].to_numpy(dtype=float)
+        ax.bar(
+            centers,
+            y,
+            width=widths,
+            bottom=bottom,
+            color=color,
+            edgecolor="black",
+            linewidth=0.4,
+            alpha=0.9,
+            label=str(int(yr)),
+            zorder=3,
+        )
+        bottom += y
+
+    # Axes styling: log x-axis like before
     ax.set_xscale("log")
     ax.set_xticks(minute_edges[1:])
     ax.set_xticklabels([f"{b:g}" for b in minute_edges[1:]])
@@ -166,44 +179,63 @@ def plot_histogram():
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
     ax.grid(axis="y", linestyle="--", alpha=0.7, zorder=0)
 
-    fig.supylabel("Frequency", fontsize=12)
-    fig.supxlabel("Time Between Samples (minutes)", fontsize=12)
-    fig.suptitle("Time Between Same-Day Samples", fontsize=14)
+    ax.set_ylabel("Count", fontsize=12)
+    ax.set_xlabel("Time Between Samples (minutes)", fontsize=12)
+    ax.set_title("Time Between Same-Day Samples (counts; stacked by year)", fontsize=14)
 
-    plt.savefig(FIG_DIR / "histogram_time_between_samples.png")
+    ax.legend(
+        title="Year",
+        frameon=False,
+        ncol=3,
+        fontsize=8,
+        title_fontsize=9,
+        loc="upper right",
+    )
+
+    plt.savefig(FIG_DIR / "histogram_time_between_samples_stacked_by_year.png")
     plt.close(fig)
 
-    # ── Cumulative distribution on a separate figure ───────────────────────
-    total = float(all_year_counts.sum())
-    if total <= 0:
-        logger.warning("No counts accumulated; skipping CDF plot")
-        return
-
-    cdf = np.cumsum(all_year_counts) / total
-
+    # ── Per-year cumulative distributions ──────────────────────────────────
     fig2, ax2 = plt.subplots(1, 1, figsize=(6, 4), constrained_layout=True)
 
-    ax2.plot(bin_right, cdf, linewidth=2, linestyle="-", zorder=4, label="CDF")
+    # x-axis in minutes (upper edge of each bin)
+    x_minutes = bin_uppers.astype(float)
 
-    # match histogram x-axis styling
+    max_total = max(pivot[yr].to_numpy(dtype=float).sum() for yr in years)
+    for yr in years:
+        row = pivot[yr].to_numpy(dtype=float)
+        total = float(row.sum())
+        if total <= 0:
+            continue
+        cdf = np.cumsum(row) / max_total
+        color = cmap_years(yr - start_year - 1)
+        ax2.plot(x_minutes, cdf, linewidth=1.8, linestyle="-", zorder=4, label=str(int(yr)), color=color)
+
     ax2.set_xscale("log")
-    ax.set_xticks(minute_edges[1:])
+    ax2.set_xticks(minute_edges[1:])
     ax2.set_xticklabels([f"{b:g}" for b in minute_edges[1:]])
     ax2.xaxis.set_minor_locator(NullLocator())
 
-    # percent on y-axis
     ax2.set_ylim(0.0, 1.0)
     ax2.yaxis.set_major_formatter(PercentFormatter(1.0))
     ax2.grid(axis="both", linestyle="--", alpha=0.7, zorder=0)
 
-    ax.axhline(50, linestyle="--", linewidth=0.8, label="50 %", color="red")
-    ax.axhline(95, linestyle=":", linewidth=0.8, label="95 %", color="green")
+    ax2.axhline(0.50, linestyle="--", linewidth=0.8, color="black", alpha=0.7)
+    ax2.axhline(0.95, linestyle=":", linewidth=0.8, color="black", alpha=0.7)
 
-    fig2.supylabel("Cumulative % of samples", fontsize=12)
-    fig2.supxlabel("Time Between Samples (minutes)", fontsize=12)
-    fig2.suptitle("Cumulative Distribution: Time Between Same-Day Samples", fontsize=14)
+    ax2.set_ylabel("Cumulative % of samples", fontsize=12)
+    ax2.set_xlabel("Time Between Samples (minutes)", fontsize=12)
+    ax2.set_title("CDF by Year: Time Between Same-Day Samples", fontsize=14)
 
-    plt.savefig(FIG_DIR / "cumsum_time_between_samples.png")
+    ax2.legend(
+        title="Year",
+        frameon=False,
+        fontsize=8,
+        ncol=3,
+        loc="lower right",
+    )
+
+    plt.savefig(FIG_DIR / "cumsum_time_between_samples_cdf_by_year.png")
     plt.close(fig2)
 
 

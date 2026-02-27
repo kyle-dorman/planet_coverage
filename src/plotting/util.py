@@ -26,14 +26,12 @@ def load_grids(base: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoD
     return query_df, grids_df, hex_grid
 
 
-def create_merged_grids(
-    base: Path, shorelines: Path, hex_size: float = 1.5
-) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
+def create_merged_grids(base: Path, shorelines: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
     display_crs = "EPSG:4326"
-    robinson_crs = "ESRI:54030"
     sinus_crs = "ESRI:54008"
 
     query_df = gpd.read_file(shorelines / "ocean_grids.gpkg")
+    hex_grid = gpd.read_file(shorelines / "hex_grids.gpkg").to_crs(sinus_crs)
     grids_df = gpd.read_file(shorelines / "coastal_grids.gpkg").rename(columns={"cell_id": "grid_id"})
     assert query_df.crs == sinus_crs
     assert grids_df.crs == sinus_crs
@@ -44,11 +42,6 @@ def create_merged_grids(
         len(query_df),
         len(grids_df),
         len(heuristics_df),
-    )
-
-    cell_size_m = compute_step(hex_size)
-    hex_grid = (
-        make_equal_area_hex_grid(cell_size_m, robinson_crs).to_crs(sinus_crs).rename(columns={"cell_id": "hex_id"})
     )
 
     logger.info("Generated %d equal-area hexagons", len(hex_grid))
@@ -1001,9 +994,7 @@ def make_daily_time_between_hist_query(
 
 if __name__ == "__main__":
     bb = Path("/Users/kyledorman/data/planet_coverage/shorelines")
-    query_df, grids_df, hex_grid = create_merged_grids(
-        Path("/Users/kyledorman/data/planet_coverage/points_30km"), bb, 1.0
-    )
+    query_df, grids_df, hex_grid = create_merged_grids(Path("/Users/kyledorman/data/planet_coverage/points_30km"), bb)
     query_df.reset_index().to_file(bb / "merged_ocean_grids.gpkg")
     grids_df.reset_index().to_file(bb / "merged_coastal_grids.gpkg")
     hex_grid.reset_index().to_file(bb / "merged_hex_grids.gpkg")
