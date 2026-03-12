@@ -12,7 +12,7 @@ from pyproj import Transformer
 from shapely import Point
 from tqdm.auto import tqdm
 
-from src.tides import tide_model
+from src.tides import calc_tide_elevatons
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,18 @@ def compute_tide_info(
 ) -> tuple[Dict[str, Any], Dict[str, Any]] | None:
     ts_range = end_ts - start_ts
     minutes = np.arange(start_ts, end_ts, np.timedelta64(1, "m")).astype("datetime64[ns]")
-    tm = tide_model(Path(tide_data_dir), "GOT4.10", "GOT")
 
     latlons = np.array([grid_point.y, grid_point.x])
 
     try:
-        tide_elevations = tm.tide_elevations(latlons, times=[minutes])[0]  # type: ignore
+        tide_elevations = calc_tide_elevatons(
+            ys=np.array([grid_point.y]),
+            xs=np.array([grid_point.x]),
+            ts=minutes,
+            model_directory=Path(tide_data_dir),
+            model_name="GOT4.10",
+            model_format="GOT",
+        )[0]
     except IndexError as e:
         logger.error(f"Invalid cell_id {cell_id}")
         logger.exception(e)

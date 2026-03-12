@@ -126,7 +126,7 @@ def dove_yearly_coverage():
     hex_dfs = []
     grid_dfs = []
 
-    for fiscal_year in range(2014, 2025):
+    for fiscal_year in range(2013, 2025):
         start_dt = datetime(fiscal_year, 12, 1).date()
         end_dt = start_dt.replace(year=start_dt.year + 1)
         end_date = end_dt.isoformat()

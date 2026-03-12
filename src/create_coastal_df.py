@@ -16,7 +16,7 @@ from tqdm import tqdm
 from src.config import Instrument, ItemType, PublishingStage, QualityCategory
 from src.geo_util import assign_intersection_id
 from src.query_udms import DataFrameRow
-from src.tides import tide_model
+from src.tides import calc_tide_elevatons
 
 DEFAULT_NUM_PROCS = max(1, cpu_count() - 1)
 
@@ -151,8 +151,6 @@ def process_file(
     assert not joined.cell_id.isna().any(), joined.cell_id.isna().sum()
 
     # Add tide information
-    tm = tide_model(tide_data_dir, "GOT4.10", "GOT")
-    assert tm is not None
     joined["tide_height"] = 0.0
 
     # Some cells might not have tide heuristic information
@@ -160,9 +158,16 @@ def process_file(
 
     for cell_id, rows in joined.groupby("cell_id"):
         geom = cell_geom_gdf.loc[cell_id].geometry
-        latlon = np.array([geom.y, geom.x])  # type: ignore
+        # latlon = np.array([geom.y, geom.x])  # type: ignore
         try:
-            tide_heights = tm.tide_elevations(latlon, [rows.acquired.to_numpy()])  # type: ignore
+            tide_heights = calc_tide_elevatons(
+                ys=np.array([geom.y]),
+                xs=np.array([geom.x]),
+                ts=rows.acquired.to_numpy(),
+                model_directory=tide_data_dir,
+                model_name="GOT4.10",
+                model_format="GOT",
+            )[0]
         except IndexError as e:
             logger.exception(e)
             logger.error(f"No closest point for cell_id {cell_id}")

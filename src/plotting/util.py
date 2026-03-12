@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 from matplotlib import colors, ticker
 
-from src.gen_points_map import compute_step, make_equal_area_hex_grid
 from src.geo_util import assign_intersection_id
 
 logger = logging.getLogger(__name__)

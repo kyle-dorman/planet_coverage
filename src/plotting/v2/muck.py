@@ -22,7 +22,7 @@ BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")
 SHORELINES = BASE.parent / "shorelines"
 
 # Example path patterns
-f_pattern = "skysat_dove/*/*/*/*/data.parquet"
+f_pattern = "*/coastal_results/*/*/*/coastal_points.parquet"
 all_files_pattern = str(BASE / f_pattern)
 
 # Combined list used later when we search individual files
@@ -35,7 +35,8 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
-valid = grids_df.is_coast
+MIN_DIST = 20.0
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
 grids_df = grids_df[valid].copy()
 
 logger.info("Loaded grid dataframes")
@@ -53,30 +54,36 @@ logger.info("Registered DuckDB view 'samples_all'")
 
 query = """
 SELECT
-    grid_id,
-    COUNT(skysat_id) AS sample_count
+    *
 FROM
     samples_all
-GROUP BY
-    grid_id
+WHERE
+    item_type           = 'PSScene'
+    AND coverage_pct    > 0.5
+    AND acquired        <  TIMESTAMP '2015-12-01'
 """
 
-df = con.execute(query).fetchdf()
-df.grid_id = df.grid_id.map(int)
+df = con.execute(query).fetchdf().set_index("grid_id")
 
-df = df.set_index("grid_id")
-hex_df = grids_df[["geometry"]].join(df, how="left").fillna(0.0)
-gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=hex_grid.crs)
+df = df.join(grids_df[["dist_km", "is_coast"]], how="inner")
+
+df.to_csv("/Users/kyledorman/Desktop/first_samples.csv")
+
+# df.grid_id = df.grid_id.map(int)
+
+# df = df.set_index("grid_id")
+# hex_df = grids_df[["geometry"]].join(df, how="left").fillna(0.0)
+# gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=hex_grid.crs)
 
 
-pdb.set_trace()
+# pdb.set_trace()
 
-print("MAX SKYSAT/DOVE INTERSECTIONS GRID CELL")
-print(gdf[gdf.sample_count == gdf.sample_count.max()])
-print(gdf[gdf.sample_count == gdf.sample_count.max()].geometry.centroid)
+# print("MAX SKYSAT/DOVE INTERSECTIONS GRID CELL")
+# print(gdf[gdf.sample_count == gdf.sample_count.max()])
+# print(gdf[gdf.sample_count == gdf.sample_count.max()].geometry.centroid)
 
-print("% Grids with atleast 1 samples")
-print(round(100 * (gdf.sample_count > 0).sum() / len(gdf)))
+# print("% Grids with atleast 1 samples")
+# print(round(100 * (gdf.sample_count > 0).sum() / len(gdf)))
 
-print("% Grids with atleast 5 samples")
-print(round(100 * (gdf.sample_count > 4).sum() / len(gdf)))
+# print("% Grids with atleast 5 samples")
+# print(round(100 * (gdf.sample_count > 4).sum() / len(gdf)))

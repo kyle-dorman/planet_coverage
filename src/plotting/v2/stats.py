@@ -296,7 +296,7 @@ def query_skysat_stats():
     logger.info(f"Saved stacked bar chart to {output_path}")
 
 
-# query_grid_stats()
-# coastal_cell_stats()
+query_grid_stats()
+coastal_cell_stats()
 query_skysat_stats()
 logger.info("Done")
