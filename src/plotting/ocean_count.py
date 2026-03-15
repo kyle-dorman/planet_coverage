@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")  # <-- update this
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "ocean"
+FIG_DIR = BASE.parent / "figs" / "ocean"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns

@@ -11,6 +11,7 @@ import geopandas as gpd
 import polars as pl
 from dotenv import find_dotenv, load_dotenv
 from planet import DataClient, Session, data_filter
+from shapely import Polygon
 from shapely.geometry import shape
 from tqdm.asyncio import tqdm_asyncio
 
@@ -168,8 +169,9 @@ def dataframe_row(item: dict, cell_id: int) -> DataFrameRow:
 async def process_cell(
     sess: Session,
     config: QueryConfig,
-    search_filter: dict,
-    grid_geojson: dict,
+    geometry: Polygon,
+    start_date: datetime,
+    end_date: datetime,
     cell_id: int,
 ) -> None:
     """Download results for 1 geometry and save the results to a parquet file.
@@ -190,6 +192,9 @@ async def process_cell(
         # skip if we've already produced a results file *or* the sentinel
         if results_path.exists() or marker_path.exists():
             return
+
+        grid_geojson = polygon_to_geojson_dict(geometry)
+        search_filter = create_search_filter(start_date, end_date, grid_geojson, config)
 
         async def _collect_lazy():
             lazy = do_search(
@@ -243,15 +248,14 @@ async def run_queries(sess: Session, config: QueryConfig, start_date: datetime, 
     async def download_all_items():
         async def worker(row):
             cell_id = int(row.cell_id)
-            grid_geojson = polygon_to_geojson_dict(row.geometry)
-            search_filter = create_search_filter(start_date, end_date, grid_geojson, config)
 
             async with sem:
                 await process_cell(
                     sess=sess,
                     config=config,
-                    search_filter=search_filter,
-                    grid_geojson=grid_geojson,
+                    geometry=row.geometry,
+                    start_date=start_date,
+                    end_date=end_date,
                     cell_id=cell_id,
                 )
 

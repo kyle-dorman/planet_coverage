@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "multi_capture"
+FIG_DIR = BASE.parent / "figs" / "multi_capture"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
@@ -89,7 +89,7 @@ def plot_histogram():
     hist_rows = []  # tidy (long) rows for CSV export
 
     start_year = 2016
-    end_year = 2024
+    end_year = 2025
     num_years = end_year - start_year
     for year in tqdm(range(start_year, end_year), total=num_years):
         query = make_daily_time_between_hist_query(
@@ -152,7 +152,7 @@ def plot_histogram():
 
     # Use a colormap for year colors (no hard-coded palette)
     cmap_years = plt.cm.get_cmap("viridis", num_years)
-    year_colors = [cmap_years(disp_year - start_year - 1) for disp_year in years]
+    year_colors = [cmap_years(year - start_year - 1) for year in years]
 
     for yr, color in zip(years, year_colors):
         y = pivot[yr].to_numpy(dtype=float)
@@ -240,7 +240,7 @@ def plot_histogram():
 
 
 def plot_geo():
-    year = 2023
+    year = 2024
     query = make_multiple_captures_query(year, valid_only=True)
 
     df = con.execute(query).fetchdf().set_index("grid_id")

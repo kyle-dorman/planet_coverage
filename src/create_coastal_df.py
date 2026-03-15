@@ -136,7 +136,7 @@ def process_file(
     # --- find intersection of all grids and downloaded satellite captures
 
     # intersect image footprints with grid polygons
-    joined = gpd.overlay(
+    joined: gpd.GeoDataFrame = gpd.overlay(
         grid_gdf[["grid_id", "geometry", "poly_area", "lat", "lon"]], satellite_gdf, how="intersection"
     )
 
@@ -147,7 +147,7 @@ def process_file(
         return
 
     # Assign the a consistent cell_id regardless of where the data comes from
-    joined = joined.set_index("grid_id").join(coast_tidal_grid_mapper, how="left").reset_index()
+    joined: gpd.GeoDataFrame = joined.set_index("grid_id").join(coast_tidal_grid_mapper, how="left").reset_index()
     assert not joined.cell_id.isna().any(), joined.cell_id.isna().sum()
 
     # Add tide information
@@ -155,10 +155,10 @@ def process_file(
 
     # Some cells might not have tide heuristic information
     joined["has_tide_data"] = joined.cell_id.isin(height_edges_df[~height_edges_df.height_edge_0.isna()].index)
+    joined = joined.sort_values(by=["cell_id", "acquired"])
 
     for cell_id, rows in joined.groupby("cell_id"):
         geom = cell_geom_gdf.loc[cell_id].geometry
-        # latlon = np.array([geom.y, geom.x])  # type: ignore
         try:
             tide_heights = calc_tide_elevatons(
                 ys=np.array([geom.y]),
@@ -167,7 +167,7 @@ def process_file(
                 model_directory=tide_data_dir,
                 model_name="GOT4.10",
                 model_format="GOT",
-            )[0]
+            )
         except IndexError as e:
             logger.exception(e)
             logger.error(f"No closest point for cell_id {cell_id}")

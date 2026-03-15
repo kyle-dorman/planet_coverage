@@ -35,7 +35,19 @@ SCHEMA = {
 
 
 def load_gdf(pth: Path | str, crs: str) -> gpd.GeoDataFrame:
-    df_pd = pd.read_parquet(pth)
+    pl_df = pl.read_parquet(pth)
+
+    enum_like_cols = [
+        "item_type",
+        "instrument",
+        "quality_category",
+        "publishing_stage",
+    ]
+
+    pl_df = pl_df.with_columns([pl.col(c).cast(pl.Utf8) for c in enum_like_cols if c in pl_df.columns])
+
+    df_pd = pl_df.to_pandas()
+
     df_pd["geometry"] = df_pd["geometry_wkb"].apply(wkb.loads)  # type: ignore
     df_pd = df_pd.drop(columns=["geometry_wkb"])
     df_pd = df_pd.drop_duplicates(subset=["id"]).copy()
@@ -136,9 +148,7 @@ def process_pair(
     grids_df = grids_df[grids_df.intersects(query_df.loc[cell_id].geometry)]
 
     if filter_coastal_area:
-        keep_grids = grids_df[((grids_df["dist_km"].isna()) | (grids_df["dist_km"] < 5)) & (~grids_df.is_land)].to_crs(
-            "EPSG:4326"
-        )
+        keep_grids = grids_df[grids_df.is_coast].to_crs("EPSG:4326")
 
         # Filter to just coastal geoms
         ss_df = ss_df.set_index("id")
@@ -320,7 +330,7 @@ def process_pair(
     help="GeoPackage of polygons use for planet querying (index must match cell_id)",
 )
 @click.option(
-    "--grid-file", required=True, type=click.Path(exists=True, dir_okay=False), help="Coastal grids GPKG file."
+    "--coastal-grids-path", required=True, type=click.Path(exists=True, dir_okay=False), help="Coastal grids GPKG file."
 )
 @click.option("--clear-thresh", default=75.0, show_default=True, help="Minimum SkySat clear_percent.")
 @click.option(
@@ -345,7 +355,7 @@ def main(
     base_dir: str,
     save_dir: Path,
     query_grids_path: Path,
-    grid_file: str,
+    coastal_grids_path: str,
     clear_thresh: float,
     time_window_days: float,
     time_of_day_window: float,
@@ -359,7 +369,7 @@ def main(
     files under *base_dir* and write a combined GPKG.
     """
     base = Path(base_dir)
-    grid_path = Path(grid_file)
+    grid_path = Path(coastal_grids_path)
 
     tasks = []
     for dove_path in base.glob("dove/results/*/*/*/*/data.parquet"):

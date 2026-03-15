@@ -24,7 +24,7 @@ logger.info("Computing solar stats and plots")
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "solar_time"
+FIG_DIR = BASE.parent / "figs" / "solar_time"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
@@ -88,8 +88,8 @@ def solar_time_offset_by_fy_plot():
         JOIN grid_ids_tbl USING (grid_id)
         WHERE s.item_type = 'PSScene'
             AND s.coverage_pct > 0.5
-            AND s.acquired >= '2015-12-01'
-            AND s.acquired < '2024-12-01'
+            AND s.acquired >= '2016-01-01'
+            AND s.acquired < '2025-01-01'
             AND s.publishing_stage = 'finalized'
             AND s.quality_category = 'standard'
             AND s.clear_percent    > 75.0
@@ -105,7 +105,7 @@ def solar_time_offset_by_fy_plot():
 
     # Ensure instruments are stable order
     inst_order = sorted(df["instrument"].unique())
-    years = list(range(2016, 2025))  # FY 2016 (Dec 2015→Nov 2016) through FY 2024
+    years = list(range(2016, 2025))
 
     # Pivot for plotting grouped bars (mean as height, IQR as error bars)
     # We'll create one bar per instrument per FY with asymmetric errors: [mean - q25, q75 - mean]
@@ -206,8 +206,8 @@ def solar_time_offset_by_year_month_plot():
         JOIN grid_ids_tbl USING (grid_id)
         WHERE s.item_type = 'PSScene'
             AND s.coverage_pct > 0.5
-            AND s.acquired >= '2015-12-01'
-            AND s.acquired < '2024-12-01'
+            AND s.acquired >= '2016-01-01'
+            AND s.acquired < '2025-01-01'
             AND s.publishing_stage = 'finalized'
             AND s.quality_category = 'standard'
             AND s.clear_percent    > 75.0
@@ -224,8 +224,8 @@ def solar_time_offset_by_year_month_plot():
     # Ensure datetime for plotting
     df["month"] = pd.to_datetime(df["month"])  # pandas datetime64[ns]
 
-    # Define continuous monthly domain: 2016-01 through 2023-12 (8 years × 12 months)
-    months = pd.date_range(df.month.min(), "2024-12-01", freq="MS")
+    # Define continuous monthly domain: (8 years × 12 months)
+    months = pd.date_range(df.month.min(), "2025-01-01", freq="MS")
 
     # Ensure instruments are stable order
     inst_order = sorted(df["instrument"].unique())
@@ -322,8 +322,8 @@ def plot_median_and_std_geo():
         WHERE
             item_type           = 'PSScene'
             AND coverage_pct    > 0.5
-            AND acquired        >=  TIMESTAMP '2015-12-01'
-            AND acquired        <   TIMESTAMP '2024-12-01'
+            AND acquired        <  TIMESTAMP '2025-01-01'
+            AND acquired        >  TIMESTAMP '2016-01-01'
             AND publishing_stage = 'finalized'
             AND quality_category = 'standard'
             AND clear_percent    > 75.0

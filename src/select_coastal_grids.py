@@ -40,6 +40,42 @@ def filter_partition(box_grid: gpd.GeoDataFrame, coastal: gpd.GeoDataFrame) -> g
     return box_grid.loc[mask]
 
 
+def build_centroid_and_corner_points(df: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    Create one point for the centroid and one point for each exterior
+    bounding-box corner of every grid cell. The returned GeoDataFrame contains
+    repeated cell_id values; if any of the five points falls within
+    land/coastal polygons, that cell can be flagged via its cell_id.
+    """
+    centers = df.geometry.centroid
+    bounds = df.geometry.bounds
+
+    # Build corner points
+    point_frames = [
+        gpd.GeoDataFrame(
+            {"cell_id": df.cell_id, "geometry": centers},
+            crs=df.crs,
+        ),
+        gpd.GeoDataFrame(
+            {"cell_id": df.cell_id, "geometry": gpd.points_from_xy(bounds.minx, bounds.miny)},
+            crs=df.crs,
+        ),
+        gpd.GeoDataFrame(
+            {"cell_id": df.cell_id, "geometry": gpd.points_from_xy(bounds.minx, bounds.maxy)},
+            crs=df.crs,
+        ),
+        gpd.GeoDataFrame(
+            {"cell_id": df.cell_id, "geometry": gpd.points_from_xy(bounds.maxx, bounds.miny)},
+            crs=df.crs,
+        ),
+        gpd.GeoDataFrame(
+            {"cell_id": df.cell_id, "geometry": gpd.points_from_xy(bounds.maxx, bounds.maxy)},
+            crs=df.crs,
+        ),
+    ]
+    return gpd.GeoDataFrame(pd.concat(point_frames, ignore_index=True), geometry="geometry", crs=df.crs)
+
+
 def save_points(df: gpd.GeoDataFrame, output_path: str) -> None:
     """
     Save filtered points to GeoPackage.
@@ -224,9 +260,6 @@ def main(
 
     t0 = time.perf_counter()
     logger.info("Computing Land Grid Overlaps …")
-    pts_df = coastal_grids.copy()
-    pts_df.geometry = pts_df.geometry.centroid
-
     sinter = coastal_grids.sjoin(sidf, how="inner", predicate="within").cell_id.unique()
     binter = coastal_grids.sjoin(bidf, how="inner", predicate="within").cell_id.unique()
     minter = coastal_grids.sjoin(mldf, how="inner", predicate="within").cell_id.unique()
@@ -235,14 +268,17 @@ def main(
 
     t0 = time.perf_counter()
     logger.info("Computing Coastal Grid Overlaps …")
-    sinter = pts_df.sjoin(sidf, how="inner", predicate="within").cell_id.unique()
-    binter = pts_df.sjoin(bidf, how="inner", predicate="within").cell_id.unique()
-    minter = pts_df.sjoin(mldf, how="inner", predicate="within").cell_id.unique()
+    five_pts_df = build_centroid_and_corner_points(coastal_grids)
+    sinter = five_pts_df.sjoin(sidf, how="inner", predicate="within").cell_id.unique()
+    binter = five_pts_df.sjoin(bidf, how="inner", predicate="within").cell_id.unique()
+    minter = five_pts_df.sjoin(mldf, how="inner", predicate="within").cell_id.unique()
     coastal_ids = np.unique(np.concatenate([sinter, binter, minter]))
     logger.info("Coastal Grid - CoastLine Overlap calculated in %.2f s", time.perf_counter() - t0)
 
     t0 = time.perf_counter()
     logger.info("Computing Coastal Grid - Small Island Distances …")
+    pts_df = coastal_grids.copy()
+    pts_df.geometry = pts_df.centroid
     snearest = (
         gpd.sjoin_nearest(
             pts_df[["geometry", "cell_id"]],

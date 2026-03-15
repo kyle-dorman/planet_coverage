@@ -215,6 +215,17 @@ def main(
     mid_area = small_area**2
     large_islands = bidf[bidf.Area_km2 > mid_area].reset_index(drop=True)
     mid_islands = bidf[(bidf.Area_km2 <= mid_area) & (bidf.Area_km2 > small_area)].reset_index(drop=True)
+    small_islands = gpd.GeoDataFrame(
+        pd.concat(
+            [
+                bidf[(bidf.Area_km2 <= small_area)].reset_index(drop=True),
+                sidf,
+            ],
+            ignore_index=True,
+        ),
+        geometry="geometry",
+        crs=bidf.crs,
+    )
 
     logger.info("Processing mainlands")
     coast_main = process_large_land(
@@ -251,7 +262,7 @@ def main(
 
     logger.info("Processing small islands")
     coast_small = process_small_islands(
-        df=sidf,
+        df=small_islands,
         mainlands=mldf_simp,
         proj_crs=proj_crs,
         pre_simplify_tol=pre_simplify_tol,

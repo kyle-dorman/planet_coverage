@@ -24,7 +24,7 @@ BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")  # <-- update
 SHORELINES = BASE.parent / "shorelines"
 
 # Example path patterns
-f_pattern = "dove/coastal_results/*/*/*/coastal_points.parquet"
+f_pattern = "dove/coastal_results_old/*/*/*/coastal_points.parquet"
 all_files_pattern = str(BASE / f_pattern)
 
 # Combined list used later when we search individual files
@@ -51,7 +51,7 @@ valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_D
 grids_df = grids_df[valid].copy()
 
 for pct in [50, 90]:
-    FIG_DIR = BASE.parent / "figs_v2" / f"tide_{pct}"
+    FIG_DIR = BASE.parent / "figs" / f"tide_{pct}"
     FIG_DIR.mkdir(exist_ok=True, parents=True)
 
     # --- Connect to DuckDB ---
@@ -72,8 +72,8 @@ for pct in [50, 90]:
         COUNT(*)            AS sample_count,
     FROM samples_all
     WHERE
-            acquired         >= TIMESTAMP '2023-12-01'
-        AND acquired         <  TIMESTAMP '2024-12-01'
+            acquired         >= TIMESTAMP '2024-01-01'
+        AND acquired         <  TIMESTAMP '2025-01-01'
         AND item_type        = 'PSScene'
         AND publishing_stage = 'finalized'
         AND quality_category = 'standard'
@@ -165,7 +165,7 @@ for pct in [50, 90]:
     # Use human readable log scale edges
     bin_edges = np.array([0, 1, 2, 7, 14, 30, 60, 90, 180, 365], dtype=np.int32)
     bin_right = bin_edges[1:]  # right edge of each bar
-    year = 2023
+    year = 2024
 
     extra_filter = "AND is_mid_tide AND has_tide_data"
     query = make_solar_time_between_query(year, pct, valid_only=True, extra_filter=extra_filter)

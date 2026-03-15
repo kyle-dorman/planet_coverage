@@ -317,7 +317,7 @@ def make_solar_time_between_query(year: int, pct: int, valid_only: bool, extra_f
     # ------------------------------------------------------------------
     # Compute end date = start + 1 year  (no extra deps needed)
     # ------------------------------------------------------------------
-    start_dt = datetime(year, 12, 1).date()
+    start_dt = datetime(year, 1, 1).date()
     end_dt = start_dt.replace(year=start_dt.year + 1)
     end_date = end_dt.isoformat()
     start_date = start_dt.isoformat()
@@ -415,7 +415,7 @@ def make_solar_time_between_hist_query(
     # ------------------------------------------------------------------
     # Compute end date = start + 1 year  (no extra deps needed)
     # ------------------------------------------------------------------
-    start_dt = datetime(year, 12, 1).date()
+    start_dt = datetime(year, 1, 1).date()
     end_dt = start_dt.replace(year=start_dt.year + 1)
     end_date = end_dt.isoformat()
     start_date = start_dt.isoformat()
@@ -501,7 +501,7 @@ def make_time_between_query(year: int, pct: int, valid_only: bool, hours: int, e
     # ------------------------------------------------------------------
     # Compute end date = start + 1 year  (no extra deps needed)
     # ------------------------------------------------------------------
-    start_dt = datetime(year, 12, 1).date()
+    start_dt = datetime(year, 1, 1).date()
     end_dt = start_dt.replace(year=start_dt.year + 1)
     end_date = end_dt.isoformat()
     start_date = start_dt.isoformat()
@@ -604,7 +604,7 @@ def make_time_between_hist_query(
     # ------------------------------------------------------------------
     # Compute end date = start + 1 year  (no extra deps needed)
     # ------------------------------------------------------------------
-    start_dt = datetime(year, 12, 1).date()
+    start_dt = datetime(year, 1, 1).date()
     end_dt = start_dt.replace(year=start_dt.year + 1)
     end_date = end_dt.isoformat()
     start_date = start_dt.isoformat()
@@ -702,7 +702,7 @@ def make_multiple_captures_query(year: int, valid_only: bool = False) -> str:
     # ------------------------------------------------------------------
     # Compute end date = start + 1 year  (no extra deps needed)
     # ------------------------------------------------------------------
-    start_dt = datetime(year, 12, 1).date()
+    start_dt = datetime(year, 1, 1).date()
     end_dt = start_dt.replace(year=start_dt.year + 1)
     end_date = end_dt.isoformat()
     start_date = start_dt.isoformat()
@@ -766,7 +766,7 @@ def make_high_frequency_query(year: int, freq_minutes: int, valid_only: bool = F
     # ------------------------------------------------------------------
     # Compute end date = start + 1 year  (no extra deps needed)
     # ------------------------------------------------------------------
-    start_dt = datetime(year, 12, 1).date()
+    start_dt = datetime(year, 1, 1).date()
     end_dt = start_dt.replace(year=start_dt.year + 1)
     end_date = end_dt.isoformat()
     start_date = start_dt.isoformat()
@@ -831,7 +831,7 @@ def make_max_daily_captures_query(year: int, valid_only: bool = False) -> str:
     valid_only : bool
         If True, apply quality filters.
     """
-    start_dt = datetime(year, 12, 1).date()
+    start_dt = datetime(year, 1, 1).date()
     end_dt = start_dt.replace(year=start_dt.year + 1)
     start_date = start_dt.isoformat()
     end_date = end_dt.isoformat()
@@ -916,7 +916,7 @@ def make_daily_time_between_hist_query(
     # ------------------------------------------------------------------
     # Date window
     # ------------------------------------------------------------------
-    start_dt = datetime(year, 12, 1).date()
+    start_dt = datetime(year, 1, 1).date()
     end_dt = start_dt.replace(year=start_dt.year + 1)
     start_date = start_dt.isoformat()
     end_date = end_dt.isoformat()

@@ -114,6 +114,8 @@ def main(
 
     logger.info("Loading big islands")
     bidf = gpd.read_file(big_islands_gpkg)
+    # Filter out small-ish islands
+    bidf = bidf[bidf.Area_km2 > 25.0]
 
     logger.info("Creating Dask GeoDataFrame")
     # Concatenate mainland and big-islands GeoDataFrames before parallel processing

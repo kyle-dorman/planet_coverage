@@ -54,13 +54,16 @@ logger.info("Registered DuckDB view 'samples_all'")
 
 query = """
 SELECT
-    *
+    grid_id,
+    COUNT(id) AS sample_count,
 FROM
     samples_all
 WHERE
     item_type           = 'PSScene'
     AND coverage_pct    > 0.5
-    AND acquired        <  TIMESTAMP '2015-12-01'
+    AND acquired        >  TIMESTAMP '2024-12-01'
+GROUP BY grid_id
+ORDER BY grid_id
 """
 
 df = con.execute(query).fetchdf().set_index("grid_id")

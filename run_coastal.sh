@@ -9,9 +9,10 @@ SHORELINE="$DATA/planet_coverage/shorelines"
 # python src/simulated_tidal.py \
 #     --base-dir $SHORELINE \
 #     --tide-data-dir $DATA/tides \
-#     --out-path $BASE/simulated_tidal_coverage.csv
+#     --out-path $BASE/simulated_tidal_coverage.csv \
+#     ;
 
-for SAT in {"skysat","dove"}
+for SAT in {"dove",} #"skysat",
 do
     BASESAT="${BASE}/${SAT}/results"
 
@@ -27,3 +28,18 @@ do
         ;
     
 done
+
+# python src/create_hex_df.py ${BASE}/dove/results \
+#     --query-grids-path $SHORELINE/ocean_grids.gpkg \
+#     --hex-grids-path $SHORELINE/hex_grids.gpkg \
+#     --save-dir ${BASE}/${SAT}/ocean_results \
+#     ;
+
+# python src/skysat_dove_intersection.py \
+#     --base-dir ${BASE} \
+#     --query-grids-path $SHORELINE/ocean_grids.gpkg \
+#     --coastal-grids-path $SHORELINE/coastal_grids.gpkg \
+#     --save-dir ${BASE}/skysat_dove \
+#     --filter-coastal-area \
+#     ;
+

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")  # <-- update this
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "distance"
+FIG_DIR = BASE.parent / "figs" / "distance"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
@@ -62,8 +62,8 @@ query = """
     WHERE
         item_type = 'PSScene'
         AND coverage_pct > 0.5
-        AND acquired        <  TIMESTAMP '2024-12-01'
-        AND acquired        >  TIMESTAMP '2015-12-01'
+        AND acquired        <  TIMESTAMP '2025-01-01'
+        AND acquired        >  TIMESTAMP '2016-01-01'
         AND publishing_stage = 'finalized'
         AND quality_category = 'standard'
         AND clear_percent    > 75.0

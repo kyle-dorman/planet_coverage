@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "total_coverage"
+FIG_DIR = BASE.parent / "figs" / "total_coverage"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # path patterns
@@ -78,8 +78,8 @@ def dove_coverage():
         WHERE
             item_type           = 'PSScene'
             AND coverage_pct    > 0.5
-            AND acquired        <  TIMESTAMP '2024-12-01'
-            AND acquired        >  TIMESTAMP '2015-12-01'
+            AND acquired        <  TIMESTAMP '2025-01-01'
+            AND acquired        >  TIMESTAMP '2016-01-01'
         GROUP BY grid_id
     """
 
@@ -103,7 +103,7 @@ def dove_coverage():
     plot_gdf_column(
         gdf=gdf,
         column="median_count",
-        title="Median PlanetScope Sample Count (12/2015-12/2024)",
+        title="Median PlanetScope Sample Count (2016-2024)",
         title_fontsize=15,
         vmin=10,
         vmax=3000,
@@ -126,12 +126,11 @@ def dove_yearly_coverage():
     hex_dfs = []
     grid_dfs = []
 
-    for fiscal_year in range(2013, 2025):
-        start_dt = datetime(fiscal_year, 12, 1).date()
+    for year in range(2013, 2025):
+        start_dt = datetime(year, 1, 1).date()
         end_dt = start_dt.replace(year=start_dt.year + 1)
         end_date = end_dt.isoformat()
         start_date = start_dt.isoformat()
-        disp_year = fiscal_year + 1
 
         query = f"""
             SELECT
@@ -147,14 +146,14 @@ def dove_yearly_coverage():
         """
         df = con.execute(query).fetchdf().set_index("grid_id")
 
-        logger.info(f"Query finished {disp_year}")
+        logger.info(f"Query finished {year}")
 
         grids_data_df = (
             grids_df[["cell_id", "dist_km", "is_land", "is_coast", "hex_id", "geometry"]]
             .join(df, how="left")
             .fillna(0.0)
         )
-        grids_data_df["year"] = disp_year
+        grids_data_df["year"] = year
         agg = grids_data_df.groupby("hex_id").agg(
             median_count=("sample_count", "median"),
             sum_count=("sample_count", "sum"),
@@ -162,16 +161,16 @@ def dove_yearly_coverage():
         agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
         agg.loc[agg.median_count == 0, "median_count"] = np.nan
         gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
-        gdf["year"] = disp_year
+        gdf["year"] = year
 
         plot_gdf_column(
             gdf=gdf,
             column="median_count",
-            title=f"Median PlanetScope Sample Count - {disp_year}",
+            title=f"Median PlanetScope Sample Count - {year}",
             title_fontsize=15,
             vmin=1,
             vmax=480,
-            save_path=FIG_DIR / f"median_dove_{disp_year}.png",
+            save_path=FIG_DIR / f"median_dove_{year}.png",
             use_cbar_label=False,
         )
 
@@ -202,16 +201,14 @@ def dove_seasonal_coverage():
         "winter": (12, 1, 2),
     }
 
-    for fiscal_year in [2023, None]:
-        if fiscal_year is not None:
-            start_dt = datetime(fiscal_year, 12, 1).date()
+    for year in [2024, None]:
+        if year is not None:
+            start_dt = datetime(year, 1, 1).date()
             end_dt = start_dt.replace(year=start_dt.year + 1)
-            disp_year = fiscal_year + 1
 
         else:
-            start_dt = datetime(2015, 12, 1)
-            end_dt = datetime(2024, 12, 1)
-            disp_year = None
+            start_dt = datetime(2016, 1, 1)
+            end_dt = datetime(2025, 1, 1)
 
         end_date = end_dt.isoformat()
         start_date = start_dt.isoformat()
@@ -249,7 +246,7 @@ def dove_seasonal_coverage():
 
                 df = con.execute(query).fetchdf().set_index("grid_id")
 
-                logger.info(f"Query finished {disp_year} {season}")
+                logger.info(f"Query finished {year} {season}")
 
                 grids_data_df = (
                     grids_df[["cell_id", "dist_km", "is_land", "is_coast", "hex_id", "geometry"]]
@@ -257,7 +254,7 @@ def dove_seasonal_coverage():
                     .fillna(0.0)
                 )
                 grids_data_df["season"] = season
-                grids_data_df["year"] = disp_year
+                grids_data_df["year"] = year
                 grids_data_df["valid"] = valid_only
 
                 agg = grids_data_df.groupby("hex_id").agg(
@@ -268,19 +265,19 @@ def dove_seasonal_coverage():
                 agg.loc[agg.sum_count == 0, "median_count"] = np.nan
                 gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
                 gdf["season"] = season
-                gdf["year"] = disp_year
+                gdf["year"] = year
                 gdf["valid"] = valid_only
 
                 valid_title = "Valid" if valid_only else "All Data"
                 valid_name = "valid" if valid_only else "all_data"
-                if disp_year is not None:
-                    title_extra = f"{season.capitalize()} - {disp_year} - {valid_title}"
-                    year_name = str(disp_year)
+                if year is not None:
+                    title_extra = f"{season.capitalize()} - {year} - {valid_title}"
+                    year_name = str(year)
                 else:
                     title_extra = f"{season.capitalize()} - All Years - {valid_title}"
                     year_name = "all_years"
 
-                if disp_year is None:
+                if year is None:
                     if valid_only:
                         vmax = 360
                     else:
@@ -327,8 +324,8 @@ def skysat_coverage():
         WHERE
             item_type           = 'SkySatCollect'
             AND coverage_pct    > 0.5
-            AND acquired        <  TIMESTAMP '2024-12-01'
-            AND acquired        >  TIMESTAMP '2015-12-01'
+            AND acquired        <  TIMESTAMP '2025-01-01'
+            AND acquired        >  TIMESTAMP '2016-01-01'
         GROUP BY grid_id
     """
 
@@ -361,7 +358,7 @@ def skysat_coverage():
     plot_gdf_column(
         gdf=gdf,
         column="sum_count",
-        title="Sum SkySat Sample Count (12/2015-12/2024)",
+        title="Sum SkySat Sample Count (2016-2024)",
         title_fontsize=15,
         scale="log",
         # vmin=10,
@@ -372,7 +369,7 @@ def skysat_coverage():
     plot_gdf_column(
         gdf=gdf,
         column="max_count",
-        title="Max SkySat Sample Count (12/2015-12/2024)",
+        title="Max SkySat Sample Count (2016-2024)",
         title_fontsize=15,
         scale="log",
         # vmin=10,
@@ -391,7 +388,7 @@ def skysat_coverage():
 
 
 dove_coverage()
-skysat_coverage()
+# skysat_coverage()
 dove_yearly_coverage()
 dove_seasonal_coverage()
 

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/points_30km/")
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "skysat_dove_2_hr"
+FIG_DIR = BASE.parent / "figs" / "skysat_dove_2_hr"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns
@@ -68,14 +68,14 @@ SELECT
 FROM
     samples_all
 WHERE
-    dove_acquired < '2024-12-01'
-    AND dove_acquired > '2015-12-01'
+    dove_acquired < '2025-01-01'
+    AND dove_acquired > '2016-01-01'
 GROUP BY
     grid_id
 """
 
 df = con.execute(query).fetchdf()
-df.grid_id = df.grid_id.map(int)
+df["grid_id"] = df.grid_id.map(int)
 
 df = df.set_index("grid_id")
 hex_df = grids_df[["hex_id", "geometry", "dist_km"]].join(df, how="left").fillna(0.0)

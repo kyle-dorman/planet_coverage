@@ -1,4 +1,3 @@
-import argparse
 import logging
 import warnings
 from pathlib import Path
@@ -16,8 +15,6 @@ from src.plotting.util import (
     load_grids,
     make_solar_time_between_hist_query,
     make_solar_time_between_query,
-    make_time_between_hist_query,
-    make_time_between_query,
     plot_gdf_column,
 )
 
@@ -67,9 +64,9 @@ logger.info("Registered DuckDB view 'samples_all'")
 # --------------------- Yearly Comparision ------------------------
 
 
-def yearly_plots(con, grids_df, hex_grid, pct: int, hours: int, solar: bool, fig_dir: Path):
-    start_year = 2015
-    end_year = 2024
+def yearly_plots(con, grids_df, hex_grid, pct: int, fig_dir: Path):
+    start_year = 2016
+    end_year = 2025
     valid = True
     # Use human bins
     plt_bin_edges = np.array([0, 4, 7, 14, 30, 60, 90, 366], dtype=np.int32)
@@ -83,12 +80,7 @@ def yearly_plots(con, grids_df, hex_grid, pct: int, hours: int, solar: bool, fig
     pct_key = f"p{pct}_days_between"
 
     for year in tqdm(range(start_year, end_year), total=end_year - start_year):
-        disp_year = year + 1
-
-        if solar:
-            query = make_solar_time_between_hist_query(year, bin_edges.tolist(), valid)
-        else:
-            query = make_time_between_hist_query(year, bin_edges.tolist(), valid, hours)
+        query = make_solar_time_between_hist_query(year, bin_edges.tolist(), valid)
         hist_dict = con.execute(query).fetchall()[0][0]
 
         counts = np.array(list(hist_dict.values()))
@@ -99,15 +91,12 @@ def yearly_plots(con, grids_df, hex_grid, pct: int, hours: int, solar: bool, fig
         counts = counts[order]
         all_year_counts += counts[1:]  # skip the <min bin
 
-        if solar:
-            query = make_solar_time_between_query(year, pct, valid)
-        else:
-            query = make_time_between_query(year, pct, valid, hours=hours)
+        query = make_solar_time_between_query(year, pct, valid)
 
         df: pd.DataFrame = con.execute(query).fetchdf().set_index("grid_id")
         df.loc[df.sample_count < 2, pct_key] = np.nan
         hex_df = grids_df[["geometry", "hex_id", "dist_km"]].join(df, how="left")
-        hex_df["year"] = disp_year
+        hex_df["year"] = year
 
         all_years_df.append(hex_df.copy().reset_index())
 
@@ -117,13 +106,13 @@ def yearly_plots(con, grids_df, hex_grid, pct: int, hours: int, solar: bool, fig
         agg = agg[agg.index >= 0].join(hex_grid[["geometry"]])
         gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
-        title = f"p{pct} Days Between Samples (Year: {disp_year}, Agg: Median)"
+        title = f"p{pct} Days Between Samples (Year: {year}, Agg: Median)"
         plot_gdf_column(
             gdf,
             "median_days_between",
             title=title,
             title_fontsize=15,
-            save_path=fig_dir / f"median_days_between_{disp_year}.png",
+            save_path=fig_dir / f"median_days_between_{year}.png",
             bins=plt_bin_edges.tolist(),
         )
 
@@ -193,21 +182,21 @@ def yearly_plots(con, grids_df, hex_grid, pct: int, hours: int, solar: bool, fig
         constrained_layout=True,
     )
 
-    for disp_year, group in df.groupby("year"):
-        disp_year = int(disp_year)  # type: ignore
+    for year, group in df.groupby("year"):
+        year = int(year)  # type: ignore
         counts, _ = np.histogram(group[f"p{pct}_days_between"], bin_edges)
         cumsum = np.cumsum(counts)
         total = cumsum[-1] if cumsum[-1] else 1.0  # prevent divide-by-zero
         cumsum_pct = cumsum / total * 100.0  # → 0-100 %
 
-        color = cmap_years(disp_year - start_year - 1)  # consistent color per year
+        color = cmap_years(year - start_year - 1)  # consistent color per year
         ax.plot(
             bin_right,
             cumsum_pct,
             marker="o",
             linestyle="-",
             color=color,
-            label=str(disp_year),
+            label=str(year),
         )
 
     ax.set_ylim(0, 100)
@@ -272,13 +261,12 @@ def yearly_plots(con, grids_df, hex_grid, pct: int, hours: int, solar: bool, fig
 # --------------------- Clear % Comparision ------------------------
 
 
-def clear_pct_plots(con, grids_df, pct: int, hours: int, solar: bool, fig_dir: Path):
+def clear_pct_plots(con, grids_df, pct: int, fig_dir: Path):
     # Prepare colormap for clear %
     clear_pcts = [None, 0, 25, 50, 75, 100]
     num_rows = len(clear_pcts)
     cmap_clear = cm.get_cmap("viridis", num_rows)
-    year = 2023
-    disp_year = year + 1
+    year = 2024
     # Use human bins
     bin_edges = np.array([0, 1, 2, 4, 7, 14, 30, 60, 90, 180, 366], dtype=np.int32)
     bin_right = bin_edges[1:]  # right edge of each bar
@@ -307,16 +295,13 @@ def clear_pct_plots(con, grids_df, pct: int, hours: int, solar: bool, fig_dir: P
                 AND ground_control
             """
             label = f"clear={clear_pct}%"
-        if solar:
-            query = make_solar_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
-        else:
-            query = make_time_between_query(year, pct, hours=hours, valid_only=False, extra_filter=valid_filter)
+        query = make_solar_time_between_query(year, pct, valid_only=False, extra_filter=valid_filter)
 
         df = con.execute(query).fetchdf().set_index("grid_id")
         df.loc[df.sample_count < 2, pct_key] = np.nan
         hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({pct_key: 365})
         hex_df["clear_pct"] = clear_pct
-        hex_df["year"] = disp_year
+        hex_df["year"] = year
 
         all_levels_df.append(hex_df.reset_index().copy())
 
@@ -354,7 +339,7 @@ def clear_pct_plots(con, grids_df, pct: int, hours: int, solar: bool, fig_dir: P
     # df = con.execute(query).fetchdf().set_index("grid_id")
     # df.loc[df.sample_count < 2, pct_key] = np.nan
     # hex_df = grids_df[["geometry", "dist_km"]].join(df, how="left").fillna({pct_key: 365})
-    # hex_df["year"] = disp_year
+    # hex_df["year"] = year
     # counts, _ = np.histogram(hex_df[pct_key], bin_edges)
     # cumsum = np.cumsum(counts)
     # total = cumsum[-1] if cumsum[-1] else 1.0  # prevent divide-by-zero
@@ -386,11 +371,11 @@ def clear_pct_plots(con, grids_df, pct: int, hours: int, solar: bool, fig_dir: P
     fig.supylabel("Cumulative Grid Cell %", fontsize=12)
     fig.supxlabel("Time Between Samples (days)", fontsize=12)
     fig.suptitle(
-        f"Cumulative Distribution p{pct} Time Between Samples ({disp_year})",
+        f"Cumulative Distribution p{pct} Time Between Samples ({year})",
         fontsize=14,
     )
 
-    plt.savefig(fig_dir / f"cumsum_p{pct}_time_between_samples_by_clear_pct_{disp_year}.png")
+    plt.savefig(fig_dir / f"cumsum_p{pct}_time_between_samples_by_clear_pct_{year}.png")
     plt.close(fig)
 
     df = pd.concat(all_levels_df, ignore_index=True)
@@ -403,47 +388,17 @@ def clear_pct_plots(con, grids_df, pct: int, hours: int, solar: bool, fig_dir: P
     logger.info("Done with clear % plots")
 
 
-def run_case(con, grids_df, hex_grid, pct: int, hours: int, solar: bool):
-    if solar:
-        fig_dir = BASE.parent / "figs_v2" / f"time_between_{pct}_solar_time"
-    else:
-        fig_dir = BASE.parent / "figs_v2" / f"time_between_{pct}_pct_{hours}_hours"
+def run_case(con, grids_df, hex_grid, pct: int):
+    fig_dir = BASE.parent / "figs" / f"time_between_{pct}_solar_time"
     fig_dir.mkdir(exist_ok=True, parents=True)
 
-    yearly_plots(con, grids_df, hex_grid, pct=pct, hours=hours, solar=solar, fig_dir=fig_dir)
-    clear_pct_plots(con, grids_df, pct=pct, hours=hours, solar=solar, fig_dir=fig_dir)
+    yearly_plots(con, grids_df, hex_grid, pct=pct, fig_dir=fig_dir)
+    clear_pct_plots(con, grids_df, pct=pct, fig_dir=fig_dir)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate time-between plots with configurable parameters.")
-    parser.add_argument(
-        "--pct", type=int, nargs="+", default=[50], help="One or more percentile values (e.g., 50 75 90)"
-    )
-    parser.add_argument(
-        "--hours",
-        type=int,
-        nargs="+",
-        default=[12],
-        help="One or more hour thresholds for same-day grouping (e.g., 6 12)",
-    )
-    parser.add_argument(
-        "--solar", type=str, nargs="+", default=["false"], help="One or more boolean flags for solar mode (true/false)"
-    )
-    args = parser.parse_args()
-
-    # Normalize solar strings to booleans
-    def to_bool(s: str) -> bool:
-        return str(s).lower() in {"1", "t", "true", "y", "yes"}
-
-    solar_list = [to_bool(s) for s in args.solar]
-
-    # for p, h in product(args.pct, args.hours):
-    #     logger.info("Running with pct=%s, hours=%s, solar=%s", p, h, False)
-    #     run_case(con, grids_df, hex_grid, pct=p, hours=h, solar=False)
-
-    if True in solar_list:
-        for p in args.pct:
-            logger.info("Running with pct=%s, solar=%s", p, True)
-            run_case(con, grids_df, hex_grid, pct=p, hours=-1, solar=True)
+    for p in [90]:  # , 50]:
+        logger.info("Running with pct=%s", p)
+        run_case(con, grids_df, hex_grid, pct=p)
 
     logger.info("Done")

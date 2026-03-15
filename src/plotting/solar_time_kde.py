@@ -15,12 +15,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def wherestr(fiscal_year: int) -> str:
+def wherestr(year: int) -> str:
     return f"""
 item_type               = 'PSScene'
 AND coverage_pct        > 0.5
-AND acquired            >=  TIMESTAMP '{fiscal_year - 1}-12-01'
-AND acquired            <   TIMESTAMP '{fiscal_year}-12-01'
+AND acquired            >=  TIMESTAMP '{year}-01-01'
+AND acquired            <   TIMESTAMP '{year + 1}-01-01'
 AND publishing_stage    = 'finalized'
 AND quality_category    = 'standard'
 AND clear_percent       > 75.0
@@ -58,7 +58,7 @@ def duckdb_smoothed_local_time_density(
 def plot_local_time_distributions(
     df: pd.DataFrame,
     ax,
-    fiscal_year: int,
+    year: int,
     x_min=6.0,
     x_max=16.0,
 ):
@@ -97,7 +97,7 @@ def plot_local_time_distributions(
 
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(0, 1.2)
-    ax.set_title(f"{fiscal_year}")
+    ax.set_title(f"{year}")
     ax.grid(True, which="both", ls=":", lw=0.3)
 
 
@@ -128,7 +128,7 @@ for i in range(3):
 axes[1, 1].legend()
 
 
-FIG_DIR = BASE.parent / "figs_v2" / "solar_time"
+FIG_DIR = BASE.parent / "figs" / "solar_time"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 fig.suptitle("Local-time distribution by instrument", fontsize=14)

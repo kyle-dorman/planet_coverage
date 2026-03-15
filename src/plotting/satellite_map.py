@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 BASE = Path("/Users/kyledorman/data/planet_coverage/24b3/")
 SHORELINES = BASE.parent / "shorelines"
-FIG_DIR = BASE.parent / "figs_v2" / "sat_coverage"
+FIG_DIR = BASE.parent / "figs" / "sat_coverage"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # Example path patterns

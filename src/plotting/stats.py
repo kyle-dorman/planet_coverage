@@ -46,7 +46,7 @@ def query_grid_stats():
         schema=DataFrameRow.polars_schema(),
     )
     filtered = all_lazy.filter(
-        (pl.col("acquired") < datetime(2024, 12, 1)) & (pl.col("acquired") > datetime(2015, 12, 1))
+        (pl.col("acquired") < datetime(2025, 1, 1)) & (pl.col("acquired") > datetime(2016, 1, 1))
     )
     # aggregate metrics
     df = filtered.select(
@@ -132,8 +132,8 @@ def coastal_cell_stats():
         schema=COASTAL_SCHEMA,
     )
     filtered = all_lazy.filter(
-        (pl.col("acquired") < datetime(2024, 12, 1))
-        & (pl.col("acquired") > datetime(2015, 12, 1))
+        (pl.col("acquired") < datetime(2025, 1, 1))
+        & (pl.col("acquired") > datetime(2016, 1, 1))
         & (pl.col("coverage_pct") > 0.5)
         & pl.col("grid_id").is_in(all_grid_ids)
     )
@@ -227,7 +227,7 @@ def query_skysat_stats():
         schema=DataFrameRow.polars_schema(),
     )
     filtered = all_lazy.filter(
-        (pl.col("acquired") < datetime(2024, 12, 1)) & (pl.col("acquired") > datetime(2015, 12, 1))
+        (pl.col("acquired") < datetime(2025, 1, 1)) & (pl.col("acquired") > datetime(2016, 1, 1))
     )
     # aggregate metrics
     df = (

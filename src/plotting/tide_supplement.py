@@ -29,7 +29,7 @@ if not all_parquets:
 logger.info("Found %d parquet files", len(all_parquets))
 
 
-FIG_DIR = BASE.parent / "figs_v2" / "tide_supplement"
+FIG_DIR = BASE.parent / "figs" / "tide_supplement"
 FIG_DIR.mkdir(exist_ok=True, parents=True)
 
 # --- Connect to DuckDB ---
@@ -53,8 +53,8 @@ SELECT
     tide_height
 FROM samples_all
 WHERE
-        acquired         >= TIMESTAMP '2017-12-01'
-    AND acquired         <  TIMESTAMP '2024-12-01'
+        acquired        <  TIMESTAMP '2025-01-01'
+    AND acquired        >  TIMESTAMP '2016-01-01'
     AND item_type        = 'PSScene'
     AND coverage_pct     > 0.5
     AND has_tide_data
@@ -77,8 +77,8 @@ SELECT
     tide_height
 FROM samples_all
 WHERE
-        acquired         >= TIMESTAMP '2017-12-01'
-    AND acquired         <  TIMESTAMP '2024-12-01'
+        acquired        <  TIMESTAMP '2025-01-01'
+    AND acquired        >  TIMESTAMP '2016-01-01'
     AND item_type        = 'PSScene'
     AND publishing_stage = 'finalized'
     AND quality_category = 'standard'
