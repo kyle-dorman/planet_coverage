@@ -43,7 +43,7 @@ con.execute(f"""
 logger.info("Registered DuckDB view 'samples_all'")
 
 low_tide_grid = 12652104
-high_tide_grid = 12862252
+high_tide_grid = 12802630
 tide_range_grid = 12903762
 
 query = """
@@ -58,7 +58,7 @@ WHERE
     AND item_type        = 'PSScene'
     AND coverage_pct     > 0.5
     AND has_tide_data
-    AND grid_id IN (12652104, 12862252, 12903762)
+    AND grid_id IN (12652104, 12802630, 12903762)
 ORDER BY grid_id;
 """
 
@@ -87,7 +87,7 @@ WHERE
     AND has_sr_asset
     AND ground_control
     AND has_tide_data
-    AND grid_id IN (12652104, 12862252, 12903762)
+    AND grid_id IN (12652104, 12802630, 12903762)
 ORDER BY grid_id;
 """
 

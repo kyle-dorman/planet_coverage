@@ -40,10 +40,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-# lats = grids_df.centroid.y
-valid = (
-    ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
-)  # & ~grids_df.is_land & ~grids_df.dist_km.isna() & (lats > -81.5) & (lats < 81.5)
+valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
 grids_df = grids_df[valid].copy()
 
 assert grids_df.crs is not None
@@ -123,69 +120,90 @@ def dove_coverage():
 def dove_yearly_coverage():
     logger.info("Plotting Yearly Dove Coverage")
 
-    hex_dfs = []
-    grid_dfs = []
+    for valid_only in [False, True]:
+        hex_dfs = []
+        grid_dfs = []
 
-    for year in range(2013, 2025):
-        start_dt = datetime(year, 1, 1).date()
-        end_dt = start_dt.replace(year=start_dt.year + 1)
-        end_date = end_dt.isoformat()
-        start_date = start_dt.isoformat()
-
-        query = f"""
-            SELECT
-                grid_id,
-                COUNT(id)                       AS sample_count,
-            FROM samples_all
-            WHERE
-                item_type           = 'PSScene'
-                AND coverage_pct    > 0.5
-                AND acquired BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
-            GROUP BY grid_id
-            ORDER BY grid_id
-        """
-        df = con.execute(query).fetchdf().set_index("grid_id")
-
-        logger.info(f"Query finished {year}")
-
-        grids_data_df = (
-            grids_df[["cell_id", "dist_km", "is_land", "is_coast", "hex_id", "geometry"]]
-            .join(df, how="left")
-            .fillna(0.0)
-        )
-        grids_data_df["year"] = year
-        agg = grids_data_df.groupby("hex_id").agg(
-            median_count=("sample_count", "median"),
-            sum_count=("sample_count", "sum"),
-        )
-        agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
-        agg.loc[agg.median_count == 0, "median_count"] = np.nan
-        gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
-        gdf["year"] = year
-
-        plot_gdf_column(
-            gdf=gdf,
-            column="median_count",
-            title=f"Median PlanetScope Sample Count - {year}",
-            title_fontsize=15,
-            vmin=1,
-            vmax=480,
-            save_path=FIG_DIR / f"median_dove_{year}.png",
-            use_cbar_label=False,
+        valid_filter = (
+            """
+                AND publishing_stage = 'finalized'
+                AND quality_category = 'standard'
+                AND clear_percent    > 75.0
+                AND has_sr_asset
+                AND ground_control
+            """
+            if valid_only
+            else ""
         )
 
-        hex_dfs.append(gdf)
-        gdf = gpd.GeoDataFrame(grids_data_df, geometry="geometry", crs=grids_df.crs)
-        grid_dfs.append(gdf)
+        for year in range(2013, 2025):
+            start_dt = datetime(year, 1, 1).date()
+            end_dt = start_dt.replace(year=start_dt.year + 1)
+            end_date = end_dt.isoformat()
+            start_date = start_dt.isoformat()
 
-    logger.info("Saving results to ShapeFile")
-    (FIG_DIR / "hex_data_by_year").mkdir(exist_ok=True)
-    gdf = gpd.GeoDataFrame(pd.concat(hex_dfs), geometry="geometry")
-    gdf.to_file(FIG_DIR / "hex_data_by_year" / "data.shp")
+            query = f"""
+                SELECT
+                    grid_id,
+                    COUNT(id)                       AS sample_count,
+                FROM samples_all
+                WHERE
+                    item_type           = 'PSScene'
+                    AND coverage_pct    > 0.5
+                    AND acquired BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+                    {valid_filter}
+                GROUP BY grid_id
+                ORDER BY grid_id
+            """
+            df = con.execute(query).fetchdf().set_index("grid_id")
 
-    (FIG_DIR / "grid_data_by_year").mkdir(exist_ok=True)
-    gdf = gpd.GeoDataFrame(pd.concat(grid_dfs), geometry="geometry")
-    gdf.to_file(FIG_DIR / "grid_data_by_year" / "data.shp")
+            logger.info(f"Query finished {year} valid_only={valid_only}")
+
+            grids_data_df = (
+                grids_df[["cell_id", "dist_km", "is_land", "is_coast", "hex_id", "geometry"]]
+                .join(df, how="left")
+                .fillna(0.0)
+            )
+            grids_data_df["year"] = year
+            grids_data_df["valid"] = valid_only
+            agg = grids_data_df.groupby("hex_id").agg(
+                median_count=("sample_count", "median"),
+                sum_count=("sample_count", "sum"),
+            )
+            agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
+            agg.loc[agg.median_count == 0, "median_count"] = np.nan
+            gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
+            gdf["year"] = year
+            gdf["valid"] = valid_only
+
+            valid_title = "Valid" if valid_only else "All Data"
+            valid_name = "valid" if valid_only else "all_data"
+
+            plot_gdf_column(
+                gdf=gdf,
+                column="median_count",
+                title=f"Median PlanetScope Sample Count - {year} - {valid_title}",
+                title_fontsize=15,
+                vmin=1,
+                vmax=480,
+                save_path=FIG_DIR / f"median_dove_{year}_{valid_name}.png",
+                use_cbar_label=False,
+            )
+
+            hex_dfs.append(gdf)
+            gdf = gpd.GeoDataFrame(grids_data_df, geometry="geometry", crs=grids_df.crs)
+            grid_dfs.append(gdf)
+
+        logger.info("Saving results to ShapeFile")
+        hex_dir = FIG_DIR / ("hex_data_by_year_valid" if valid_only else "hex_data_by_year")
+        hex_dir.mkdir(exist_ok=True)
+        gdf = gpd.GeoDataFrame(pd.concat(hex_dfs), geometry="geometry", crs=hex_dfs[0].crs)
+        gdf.to_file(hex_dir / "data.shp")
+
+        grid_dir = FIG_DIR / ("grid_data_by_year_valid" if valid_only else "grid_data_by_year")
+        grid_dir.mkdir(exist_ok=True)
+        gdf = gpd.GeoDataFrame(pd.concat(grid_dfs), geometry="geometry", crs=grid_dfs[0].crs)
+        gdf.to_file(grid_dir / "data.shp")
 
 
 def dove_seasonal_coverage():

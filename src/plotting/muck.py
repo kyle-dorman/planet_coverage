@@ -1,10 +1,8 @@
 import logging
-import pdb
 import warnings
 from pathlib import Path
 
 import duckdb
-import geopandas as gpd
 
 from src.plotting.util import load_grids
 
