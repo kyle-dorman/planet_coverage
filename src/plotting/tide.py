@@ -40,7 +40,7 @@ query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 3.0
 valid = (
     ~grids_df.is_land
-    & ~grids_df.dist_km.isna()
+    & grids_df.dist_km.notna()
     & ((grids_df.dist_km < MIN_DIST) | grids_df.is_coast)
     & ~grids_df.tide_range.isna()
 )

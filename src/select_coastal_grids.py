@@ -276,6 +276,16 @@ def main(
     logger.info("Coastal Grid - CoastLine Overlap calculated in %.2f s", time.perf_counter() - t0)
 
     t0 = time.perf_counter()
+    logger.info("Computing centroid Overlaps …")
+    coastal_pts = coastal_grids.copy()
+    coastal_pts.geometry = coastal_pts.centroid
+    sinter = coastal_pts.sjoin(sidf, how="inner", predicate="within").cell_id.unique()
+    binter = coastal_pts.sjoin(bidf, how="inner", predicate="within").cell_id.unique()
+    minter = coastal_pts.sjoin(mldf, how="inner", predicate="within").cell_id.unique()
+    dist_zero_ids = np.unique(np.concatenate([sinter, binter, minter]))
+    logger.info("Coastal Grid - Centroid Overlap calculated in %.2f s", time.perf_counter() - t0)
+
+    t0 = time.perf_counter()
     logger.info("Computing Coastal Grid - Small Island Distances …")
     pts_df = coastal_grids.copy()
     pts_df.geometry = pts_df.centroid
@@ -299,9 +309,14 @@ def main(
 
     coastal_grids["dist_km"] = pts_df[["dist_km", "sdist_km"]].min(axis=1)
     coastal_grids["is_land"] = coastal_grids.cell_id.isin(land_ids)
+    # Some grids leaked out. Get rid of them.
+    coastal_grids["is_land"] = coastal_grids.is_land | (
+        coastal_grids.cell_id.isin(coastal_ids) & (coastal_grids.dist_km > 4)
+    )
     coastal_grids["is_coast"] = coastal_grids.cell_id.isin(coastal_ids) & ~coastal_grids.is_land
     coastal_grids.loc[coastal_grids.is_land, "dist_km"] = 0.0
-    coastal_grids.loc[coastal_grids.is_coast, "dist_km"] = 0.0
+    coastal_grids.loc[coastal_grids.cell_id.isin(dist_zero_ids), "dist_km"] = 0.0
+    # coastal_grids.loc[coastal_grids.is_coast, "dist_km"] = 0.0
     coastal_grids.loc[coastal_grids.dist_km > 50, "dist_km"] = 50
 
     logger.info(

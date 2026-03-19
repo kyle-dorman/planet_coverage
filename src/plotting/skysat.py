@@ -40,10 +40,7 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 4.0
-lats = grids_df.centroid.y
-valid = (grids_df.dist_km < MIN_DIST) & (
-    ~grids_df.is_land
-)  # . & (lats > -81.5) & (lats < 81.5) & ~grids_df.is_land & ~grids_df.dist_km.isna()
+valid = ~grids_df.is_land & grids_df.dist_km.notna() & (grids_df.dist_km < MIN_DIST)
 grids_df = grids_df[valid].copy()
 
 LA_ONLY = gpd.read_file(SHORELINES / "la.geojson")

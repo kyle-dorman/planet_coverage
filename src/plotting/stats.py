@@ -26,8 +26,7 @@ SHORELINES = BASE.parent / "shorelines"
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
 MIN_DIST = 20.0
-lats = grids_df.centroid.y
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
+valid = ~grids_df.is_land & grids_df.dist_km.notna() & (grids_df.dist_km < MIN_DIST)
 grids_df = grids_df[valid].copy()
 all_grid_ids = grids_df.index.tolist()
 logger.info("Loaded grid dataframes")
@@ -46,7 +45,7 @@ def query_grid_stats():
         schema=DataFrameRow.polars_schema(),
     )
     filtered = all_lazy.filter(
-        (pl.col("acquired") < datetime(2025, 1, 1)) & (pl.col("acquired") > datetime(2016, 1, 1))
+        (pl.col("acquired") < datetime(2025, 1, 1)) & (pl.col("acquired") > datetime(2014, 1, 1))
     )
     # aggregate metrics
     df = filtered.select(
@@ -133,7 +132,7 @@ def coastal_cell_stats():
     )
     filtered = all_lazy.filter(
         (pl.col("acquired") < datetime(2025, 1, 1))
-        & (pl.col("acquired") > datetime(2016, 1, 1))
+        & (pl.col("acquired") > datetime(2014, 1, 1))
         & (pl.col("coverage_pct") > 0.5)
         & pl.col("grid_id").is_in(all_grid_ids)
     )

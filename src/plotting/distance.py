@@ -38,10 +38,7 @@ if not all_parquets:
 logger.info("Found %d parquet files", len(all_parquets))
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
-MIN_DIST = 60.0
-lats = grids_df.centroid.y
-# valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST) & (lats > -81.5) & (lats < 81.5)
-valid = ~grids_df.is_land & ~grids_df.dist_km.isna() & (grids_df.dist_km < MIN_DIST)
+valid = ~grids_df.is_land
 grids_df = grids_df[valid].copy()
 
 # --- Connect to DuckDB ---
@@ -57,7 +54,7 @@ logger.info("Registered DuckDB view 'samples_all'")
 query = """
     SELECT
         grid_id,
-        COUNT(*) AS sample_count,
+        COUNT(*)                        AS sample_count,
     FROM samples_all
     WHERE
         item_type = 'PSScene'
@@ -82,7 +79,7 @@ gdf.to_file(FIG_DIR / "grid_data" / "data.shp")
 logger.info("Plotting Counts")
 
 # 1-km bins
-bins = pd.cut(merged_df["dist_km"], np.arange(0, int(MIN_DIST) + 1, 1))  # type: ignore
+bins = pd.cut(merged_df["dist_km"], np.arange(0, int(60) + 1, 1))  # type: ignore
 
 summary = (
     merged_df.groupby(bins)["sample_count"]

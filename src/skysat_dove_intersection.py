@@ -151,7 +151,7 @@ def process_pair(
         keep_grids = grids_df[grids_df.is_coast].to_crs("EPSG:4326")
 
         # Filter to just coastal geoms
-        ss_df = ss_df.set_index("id")
+        ss_df: gpd.GeoDataFrame = ss_df.set_index("id")
         coastal_ss_ids = ss_df[["geometry"]].sjoin(keep_grids[["geometry"]]).index
         ss_df = ss_df.loc[coastal_ss_ids.unique()].copy()
         ss_df.reset_index(inplace=True)
