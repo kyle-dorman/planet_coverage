@@ -74,8 +74,9 @@ def plot_histogram():
     # Pleasant default style
     plt.style.use("seaborn-v0_8-darkgrid")
 
-    bins = np.floor(np.logspace(np.log10(1.0), np.log10(12.0 * 60), 10)).astype(np.int32)
-    minute_edges = [1e-3] + [round_up(n) for n in bins]
+    # bins = np.floor(np.logspace(np.log10(1.0), np.log10(30.0 * 60), 15)).astype(np.int32)
+    # minute_edges = [1e-3] + [round_up(n) for n in bins]
+    minute_edges = [1e-3, 1, 2, 4, 10, 20, 45, 90, 180, 360, 720, 1600]
     bin_right = minute_edges[1:]  # right edge of each bar
     day_edges = [m / 1440.0 for m in bin_right]  # minutes → days
     valid = True
@@ -86,7 +87,7 @@ def plot_histogram():
 
     hist_rows = []  # tidy (long) rows for CSV export
 
-    start_year = 2016
+    start_year = 2014
     end_year = 2025
     num_years = end_year - start_year
     for year in tqdm(range(start_year, end_year), total=num_years):
@@ -97,6 +98,9 @@ def plot_histogram():
         )
 
         hist_dict = con.execute(query).fetchall()[0][0]
+        if hist_dict is None:
+            print("No data for year", year, "skipping...")
+            continue
 
         counts = np.array(list(hist_dict.values()))
         bins = np.array(list(hist_dict.keys()))
@@ -105,24 +109,19 @@ def plot_histogram():
         bins = bins[order]
         counts = counts[order]
 
-        # Last bin is inf, ignore
-        int_bins = np.array(bins[:-1] * 1440.0, dtype=np.int32).tolist()
-        counts = counts[:-1]
-        if not np.allclose(bins[:-1], day_edges):
+        int_bins = np.array(bins * 1440.0, dtype=np.int32).tolist()
+        if not np.allclose(bins, day_edges):
             print(year)
             print(int_bins, bin_right)
-
-        # Tidy/long rows for CSV: one row per (year, bin)
-        # Keep the existing "+ 1" year convention from the previous code.
-        year_out = year + 1
+            assert np.allclose(bins, day_edges)
 
         # Lower/upper edges in minutes for each bin (upper edges are `int_bins` here)
-        bin_lowers = [0] + int_bins[:-1]
+        bin_lowers = [0] + int_bins
 
         for lo, hi, c in zip(bin_lowers, int_bins, counts):
             hist_rows.append(
                 {
-                    "year": year_out,
+                    "year": year,
                     "bin_lower_edge_min": int(lo),
                     "bin_upper_edge_min": int(hi),
                     "count": int(c),

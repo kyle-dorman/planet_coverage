@@ -881,34 +881,29 @@ def make_daily_time_between_hist_query(
     bins: Sequence[float],
     *,
     valid_only: bool = False,
-    max_hours: float = 24.0,
 ) -> str:
     """
-    Build a DuckDB query that returns **one row per grid_id**
-    with counts of time-between-samples falling into the supplied
-    ``bins``.  Bins are expressed in **days** (e.g. ``[0, 0.25, 0.5, 1.0]``),
-    are left-inclusive / right-exclusive, and must be strictly
-    increasing.
+    Build a DuckDB query that returns a single histogram of within-day time-between-sample
+    intervals across the selected grids.
+
+    For each `(grid_id, solar day, satellite_id)` combination, the query keeps only the
+    earliest acquisition time for that satellite on that solar day. It then computes
+    time differences between consecutive retained timestamps within the same
+    `(grid_id, solar day)` partition and bins those intervals using `histogram(...)`.
 
     Parameters
     ----------
     year : int
-        Starting fiscal year (window is 1 yr from Dec 1 → Nov 30).
+        Calendar year window from January 1 to January 1 of the following year.
     bins : Sequence[float]
-        Monotonically increasing bin edges in **days**.
+        Monotonically increasing histogram bin edges in **days**.
     valid_only : bool, default=False
         Apply Planet quality filters if True.
-    max_hours : float, default=24.0
-        Discard Δt values larger than this (hours).
 
     Returns
     -------
     str
-        DuckDB SQL that yields:
-
-        | grid_id | bin_0 | bin_1 | … |
-
-        where ``bin_k`` is the count for the k-th interval.
+        DuckDB SQL that returns a single histogram object named `bucket`.
     """
     if len(bins) < 2:
         raise ValueError("bins must have at least two edges")
@@ -940,13 +935,13 @@ def make_daily_time_between_hist_query(
     # width_bucket edges  (DuckDB accepts LIST_VALUE(…))
     # ------------------------------------------------------------------
     edges_sql = "LIST_VALUE(" + ", ".join(f"{b}" for b in bins) + ")"
-    max_days = max_hours / 24.0
 
     return f"""
     WITH ordered AS (
         SELECT
             s.grid_id,
             s.satellite_id,
+            DATE_TRUNC('day', s.solar_time) as day,
             MIN(EXTRACT(epoch FROM s.acquired)) AS ts
         FROM samples_all AS s
         JOIN grid_ids_tbl USING (grid_id)
@@ -959,24 +954,17 @@ def make_daily_time_between_hist_query(
         GROUP BY
             s.grid_id,
             s.satellite_id,
-            DATE_TRUNC('day', s.solar_time)
+            day
     ),
 
     deltas AS (
         SELECT
             grid_id,
-            CASE
-                WHEN satellite_id <> LAG(satellite_id) OVER (
-                        PARTITION BY grid_id
-                        ORDER BY     ts
-                    )
-                THEN
-                    (ts - LAG(ts) OVER (
-                            PARTITION BY grid_id
-                            ORDER BY     ts
-                    )) / 86400.0
-                ELSE NULL
-            END AS delta_days
+            day,
+            (ts - LAG(ts) OVER (
+                PARTITION BY grid_id, day
+                ORDER BY ts
+            )) / 86400.0 AS delta_days
         FROM ordered
     )
 
@@ -987,7 +975,6 @@ def make_daily_time_between_hist_query(
         ) AS bucket
     FROM deltas
     WHERE delta_days IS NOT NULL
-    AND delta_days <= {max_days}
     """
 
 
