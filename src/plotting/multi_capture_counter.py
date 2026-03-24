@@ -76,7 +76,7 @@ def plot_histogram():
 
     # bins = np.floor(np.logspace(np.log10(1.0), np.log10(30.0 * 60), 15)).astype(np.int32)
     # minute_edges = [1e-3] + [round_up(n) for n in bins]
-    minute_edges = [1e-3, 1, 2, 4, 10, 20, 45, 90, 180, 360, 720, 1600]
+    minute_edges = [1e-3, 5, 10, 20, 45, 90, 180, 360, 720, 1600]
     bin_right = minute_edges[1:]  # right edge of each bar
     day_edges = [m / 1440.0 for m in bin_right]  # minutes → days
     valid = True

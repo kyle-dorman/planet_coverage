@@ -3,6 +3,7 @@ import warnings
 from pathlib import Path
 
 import duckdb
+import geopandas as gpd
 
 from src.plotting.util import load_grids
 
@@ -33,8 +34,13 @@ logger.info("Found %d parquet files", len(all_parquets))
 
 
 query_df, grids_df, hex_grid = load_grids(SHORELINES)
-MIN_DIST = 20.0
-valid = ~grids_df.is_land & grids_df.dist_km.notna() & (grids_df.dist_km < MIN_DIST)
+MIN_DIST = 3.0
+valid = (
+    ~grids_df.is_land
+    & grids_df.dist_km.notna()
+    & ((grids_df.dist_km < MIN_DIST) | grids_df.is_coast)
+    & ~grids_df.tide_range.isna()
+)
 grids_df = grids_df[valid].copy()
 
 logger.info("Loaded grid dataframes")
@@ -59,32 +65,27 @@ FROM
 WHERE
     item_type           = 'PSScene'
     AND coverage_pct    > 0.5
-    AND acquired        >  TIMESTAMP '2024-12-01'
+    AND acquired        <  TIMESTAMP '2025-01-01'
+    AND acquired        >=  TIMESTAMP '2024-01-01'
+    AND publishing_stage = 'finalized'
+    AND quality_category = 'standard'
+    AND clear_percent    > 75.0
+    AND has_sr_asset
+    AND ground_control
 GROUP BY grid_id
 ORDER BY grid_id
 """
 
 df = con.execute(query).fetchdf().set_index("grid_id")
 
-df = df.join(grids_df[["dist_km", "is_coast"]], how="inner")
+df = grids_df[["dist_km", "is_coast", "geometry"]].join(df, how="left")
+df["sample_count"] = df["sample_count"].fillna(0.0)
 
-df.to_csv("/Users/kyledorman/Desktop/first_samples.csv")
+gdf = gpd.GeoDataFrame(df, geometry="geometry", crs=grids_df.crs)
 
-# df.grid_id = df.grid_id.map(int)
+logger.info("Saving results to ShapeFile")
+gdf.to_file("/Users/kyledorman/Desktop/no_midtide.gpkg")
 
-# df = df.set_index("grid_id")
-# hex_df = grids_df[["geometry"]].join(df, how="left").fillna(0.0)
-# gdf = gpd.GeoDataFrame(hex_df, geometry="geometry", crs=hex_grid.crs)
+# df.to_csv("/Users/kyledorman/Desktop/midtide.csv")
 
-
-# pdb.set_trace()
-
-# print("MAX SKYSAT/DOVE INTERSECTIONS GRID CELL")
-# print(gdf[gdf.sample_count == gdf.sample_count.max()])
-# print(gdf[gdf.sample_count == gdf.sample_count.max()].geometry.centroid)
-
-# print("% Grids with atleast 1 samples")
-# print(round(100 * (gdf.sample_count > 0).sum() / len(gdf)))
-
-# print("% Grids with atleast 5 samples")
-# print(round(100 * (gdf.sample_count > 4).sum() / len(gdf)))
+logger.info("Done")

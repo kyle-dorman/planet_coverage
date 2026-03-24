@@ -1,93 +1,94 @@
-# Analyze Planet Satlellite Coverage
+# Planet Coverage Analysis
 
-Repo for analyzing Planet Dove and SkySat coverage near the coast.
+This repository contains code for analyzing PlanetScope Dove and SkySat satellite coverage along coastal regions.
 
-## Initial Setup
+## Overview
 
-Some one time repo initialization work. 
+The codebase supports:
+- Querying Planet imagery via API
+- Aggregating coverage statistics across space and time
+- Analyzing revisit frequency and sampling patterns
+- Visualizing results using notebooks and summary plots
 
-### Install Conda
-You can install miniconda if on Mac or Linux. On Windows install Anaconda.
+## Requirements
 
-#### Miniconda
-Follow directions [HERE](https://docs.anaconda.com/miniconda/install/)
+- Conda (Miniconda recommended)
+- Git
 
-For Mac, perfer to install miniconda using brew. 
+## Setup
+
+### 1. Install Conda
+Install Miniconda (recommended) or Anaconda:
+
+- Miniconda: https://docs.anaconda.com/miniconda/install/
+- Anaconda: https://docs.anaconda.com/anaconda/install/
+
+On macOS (optional via Homebrew):
 ```bash
-brew doctor
-brew update
-brew upgrade
-brew upgrade --cask --greedy
 brew install --cask miniconda
 ```
 
-#### Anaconda
-Follow directions [HERE](https://docs.anaconda.com/anaconda/install/)
-
-### Open Terminal
-On Windows, open an Andaconda Terminal, on Linux/Mac open a regular terminal. 
-
-### Install Git
-Check if git is installed. It will return something e.g. `/usr/bin/git` if git is installed. 
+### 2. Install Git
+Check if Git is installed:
 ```bash
-# Linux/Mac
-which git
-# Windows
-where git
+which git      # macOS/Linux
+where git      # Windows
 ```
 
-If git is not installed, install it. 
+If not installed:
 ```bash
+# macOS
+brew install git
+
 # Windows
 conda install git
-# Mac
-brew install git
 ```
 
-### Clone repo
-This command will create a new folder `planet_coverage` in your terminal's current directory. If you want it installed somewhere specific, move to that folder first (`cd SOMEWHERE/ELSE`)
+### 3. Clone the Repository
 ```bash
 git clone git@github.com:kyledorman/planet_coverage.git
-```
-
-After cloning the repo, enter the folder
-```bash
 cd planet_coverage
 ```
 
-### Create conda environment
+### 4. Create Environment
 ```bash
 conda env create -f environment.yml
-```
-
-### Activate Jupyter Widgets
-I am not sure if this is required or not. Depends on some package versions.
-```bash
 conda activate planet_coverage
-conda install -c conda-forge jupyter_contrib_nbextensions
-jupyter nbextension enable --py widgetsnbextension
 ```
 
-## Inspect Results
-You can inspect the results using an included jupyter notebook. 
+## Usage
 
-Launch jupyter notebook
+### Run Analysis Notebook
+Launch Jupyter Lab:
 ```bash
 conda activate planet_coverage
 jupyter lab --notebook-dir=notebooks --port=8893
 ```
-Run the notebook `analysis.ipynb` to query the data with duckdb. 
 
-## Format code
+Open and run:
+```
+notebooks/analysis.ipynb
+```
+
+This notebook queries processed data using DuckDB and generates figures used in the study.
+
+## Code Formatting
 ```bash
 conda activate planet_coverage
 ./lint.sh
 ```
 
-## Update dependencies
-After changing the environment.yml file, run
+## Updating Dependencies
 ```bash
-conda activate planet_coverage
 conda env update --file environment.yml --prune
 conda activate planet_coverage
 ```
+
+## Notes
+
+- Data processing relies on columnar storage (Parquet) and analytical query engines (DuckDB/Polars) for scalability.
+- Spatial operations are performed using Python geospatial libraries.
+
+## Disclaimer
+
+This repository contains research code provided as-is for reproducibility and reference. It is not optimized as a production software package.
