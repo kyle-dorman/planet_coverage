@@ -67,54 +67,86 @@ logger.info("Registered DuckDB view 'samples_all'")
 def dove_coverage():
     logger.info("Plotting PSScene")
 
-    query = """
-        SELECT
-            grid_id,
-            COUNT(id) AS sample_count,
-        FROM samples_all
-        WHERE
-            item_type           = 'PSScene'
-            AND coverage_pct    > 0.5
-            AND acquired        <  TIMESTAMP '2025-01-01'
-            AND acquired        >  TIMESTAMP '2016-01-01'
-        GROUP BY grid_id
-    """
+    for valid_only in [False, True]:
+        valid_title = "Valid" if valid_only else "All Data"
+        valid_name = "valid" if valid_only else "all_data"
+        valid_filter = (
+            """
+                AND publishing_stage = 'finalized'
+                AND quality_category = 'standard'
+                AND clear_percent    > 75.0
+                AND has_sr_asset
+                AND ground_control
+            """
+            if valid_only
+            else ""
+        )
 
-    df = con.execute(query).fetchdf().set_index("grid_id")
+        query = f"""
+            SELECT
+                grid_id,
+                COUNT(id) AS sample_count,
+            FROM samples_all
+            WHERE
+                item_type           = 'PSScene'
+                AND coverage_pct    > 0.5
+                AND acquired        <  TIMESTAMP '2025-01-01'
+                AND acquired        >  TIMESTAMP '2014-01-01'
+                {valid_filter}
+            GROUP BY grid_id
+        """
 
-    logger.info("Query finished")
+        df = con.execute(query).fetchdf().set_index("grid_id")
 
-    grids_data_df = grids_df.join(df, how="left").fillna(0.0)
+        logger.info("Query finished")
 
-    logger.info("Plotting Counts")
-    agg = grids_data_df.groupby("hex_id").agg(
-        median_count=("sample_count", "median"),
-        max_count=("sample_count", "max"),
-        sum_count=("sample_count", "sum"),
-    )
-    agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
-    for key in ["median_count", "max_count", "sum_count"]:
-        agg.loc[agg.sum_count == 0, key] = np.nan
-    gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
+        grids_data_df: pd.DataFrame = grids_df.join(df, how="left")
 
-    plot_gdf_column(
-        gdf=gdf,
-        column="median_count",
-        title="Median PlanetScope Sample Count (2016-2024)",
-        title_fontsize=15,
-        vmin=10,
-        vmax=3000,
-        save_path=FIG_DIR / "median_dove.png",
-        use_cbar_label=False,
-    )
+        logger.info("Plotting Counts")
+        agg = (
+            grids_data_df.fillna(0.0)
+            .groupby("hex_id")
+            .agg(
+                median_count=("sample_count", "median"),
+                max_count=("sample_count", "max"),
+                sum_count=("sample_count", "sum"),
+            )
+        )
+        agg = agg[agg.index >= 0].join(hex_grid[["geometry", "grid_count"]])
+        for key in ["median_count", "max_count", "sum_count"]:
+            agg.loc[agg.sum_count == 0, key] = np.nan
+        gdf = gpd.GeoDataFrame(agg, geometry="geometry", crs=grids_df.crs)
 
-    logger.info("Saving results to ShapeFile")
-    (FIG_DIR / "hex_data").mkdir(exist_ok=True)
-    gdf.to_file(FIG_DIR / "hex_data" / "data.shp")
+        plot_gdf_column(
+            gdf=gdf,
+            column="median_count",
+            title=f"Median {valid_title} PlanetScope Sample Count (2014-2024)",
+            title_fontsize=15,
+            # vmin=10,
+            # vmax=3000,
+            scale="log",
+            save_path=FIG_DIR / f"median_dove_{valid_name}.png",
+            use_cbar_label=False,
+        )
+        plot_gdf_column(
+            gdf=gdf,
+            column="sum_count",
+            title=f"Sum {valid_title} PlanetScope Sample Count (2014-2024)",
+            title_fontsize=15,
+            # vmin=10,
+            # vmax=3000,
+            scale="log",
+            save_path=FIG_DIR / f"sum_dove_{valid_name}.png",
+            use_cbar_label=False,
+        )
 
-    (FIG_DIR / "grid_data").mkdir(exist_ok=True)
-    gdf = gpd.GeoDataFrame(grids_data_df, geometry="geometry", crs=grids_df.crs)
-    gdf.to_file(FIG_DIR / "grid_data" / "data.shp")
+        logger.info("Saving results to ShapeFile")
+        (FIG_DIR / f"hex_data_{valid_name}").mkdir(exist_ok=True)
+        gdf.to_file(FIG_DIR / f"hex_data_{valid_name}" / "data.shp")
+
+        (FIG_DIR / f"grid_data_{valid_name}").mkdir(exist_ok=True)
+        gdf = gpd.GeoDataFrame(grids_data_df, geometry="geometry", crs=grids_df.crs)
+        gdf.to_file(FIG_DIR / f"grid_data_{valid_name}" / "data.shp")
 
 
 def dove_yearly_coverage():
@@ -145,7 +177,7 @@ def dove_yearly_coverage():
             query = f"""
                 SELECT
                     grid_id,
-                    COUNT(id)                       AS sample_count,
+                    COUNT(id) AS sample_count,
                 FROM samples_all
                 WHERE
                     item_type           = 'PSScene'
@@ -407,7 +439,7 @@ def skysat_coverage():
 
 dove_coverage()
 # skysat_coverage()
-dove_yearly_coverage()
-dove_seasonal_coverage()
+# dove_yearly_coverage()
+# dove_seasonal_coverage()
 
 logger.info("Done")
